@@ -2,8 +2,12 @@
 build/
 sdkconfig
 
-# IDE
+# IDE / LSP
 .vscode/
+.cache/
+
+# build directory (just in case)
+build/
 .idea/
 *.swp
 *.swo
