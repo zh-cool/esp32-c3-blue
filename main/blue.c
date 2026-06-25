@@ -158,6 +158,9 @@ static void adv_start(void)
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
 
+    /* 先停止已有广播（防止 BLE_HS_EALREADY） */
+    ble_gap_adv_stop();
+
     rc = ble_gap_adv_start(BLE_OWN_ADDR_PUBLIC, NULL, BLE_HS_FOREVER,
                            &adv_params, ble_gap_event, NULL);
     if (rc == 0) {
