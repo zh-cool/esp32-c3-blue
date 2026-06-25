@@ -165,6 +165,32 @@ static void adv_start(void)
     }
 }
 
+/* ======================== NimBLE 主机同步回调 ========================
+ * 在 NimBLE 主机与蓝牙控制器同步完成后调用。
+ * 此时才能安全调用 GATT/GAP API。
+ */
+
+static void ble_host_sync(void)
+{
+    int rc;
+
+    ESP_LOGI(TAG, "NimBLE 主机已同步");
+
+    /* 查找 RX 特征值句柄（用于发送通知） */
+    rc = ble_gatts_find_chr(
+        BLE_UUID16_DECLARE(GATT_SVC_UUID),
+        BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
+        NULL, &s_chr_rx_handle);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "未找到 RX 特征值句柄 (rc=%d)", rc);
+    } else {
+        ESP_LOGI(TAG, "RX 特征值句柄: %d", s_chr_rx_handle);
+    }
+
+    /* 开始广播 */
+    adv_start();
+}
+
 /* ======================== NimBLE 主机任务 ======================== */
 
 static void ble_host_task(void *param)
@@ -185,6 +211,9 @@ static void ble_app_init(void)
     /* 设置 GAP 设备名称 */
     ble_svc_gap_device_name_set(DEVICE_NAME);
 
+    /* 注册主机同步回调 */
+    ble_hs_cfg.sync_cb = ble_host_sync;
+
     /* 注册 GATT 服务 */
     rc = ble_gatts_count_cfg(gatt_svcs);
     if (rc != 0) {
@@ -197,21 +226,7 @@ static void ble_app_init(void)
         return;
     }
 
-    /* 获取 RX 特征值句柄（用于后续发送通知） */
-    rc = ble_gatts_find_chr(
-        BLE_UUID16_DECLARE(GATT_SVC_UUID),
-        BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
-        NULL, &s_chr_rx_handle);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "未找到 RX 特征值句柄 (rc=%d)", rc);
-    } else {
-        ESP_LOGI(TAG, "RX 特征值句柄: %d", s_chr_rx_handle);
-    }
-
-    /* 开始广播 */
-    adv_start();
-
-    /* 启动 NimBLE 主机任务 */
+    /* 启动 NimBLE 主机任务（之后 ble_host_sync 会被异步调用） */
     nimble_port_freertos_init(ble_host_task);
 }
 
