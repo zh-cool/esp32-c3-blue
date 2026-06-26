@@ -100,17 +100,12 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             ESP_LOGI(TAG, "手机已连接 (conn_handle=%d)", event->connect.conn_handle);
-            ESP_LOGI(TAG, "继续广播, 等待其他手机连接...");
-            adv_start();
-        } else {
-            ESP_LOGE(TAG, "连接失败, 重新广播");
+            /* 连接会终止广播, 需要重新开始让更多手机发现 */
             adv_start();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "手机已断开, 重新广播");
-        adv_start();
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
