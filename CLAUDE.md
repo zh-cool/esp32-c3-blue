@@ -41,12 +41,13 @@ blue/
 ├── main/
 │   ├── CMakeLists.txt      # 组件注册，声明源码和头文件路径
 │   └── blue.c              # 主入口 app_main()
+├── client/                 # Python BLE 测试客户端（独立项目，不参与固件构建）
 ├── .mcp.json               # MCP 服务器配置（RainMaker, 文档, 组件注册）
 └── .claude/
     └── settings.local.json # Claude Code 本地设置（启用 MCP 服务器）
 ```
 
-## 架构说明
+## 开发说明
 
 ### 构建系统
 - 标准 ESP-IDF 构建流程：`cmake` → `idf.py` 封装
@@ -71,3 +72,7 @@ blue/
 - 协议栈可通过 `idf.py menuconfig` 配置（不预设 BLE 或 Wi-Fi，项目名 "blue" 暗示可能用于 BLE 项目）
 - 添加新源文件需更新 `main/CMakeLists.txt` 中的 `SRCS` 列表
 - 当前无 `sdkconfig` — 首次构建会自动生成；定制配置建议执行 `idf.py menuconfig`
+
+### client/ 目录
+
+`client/` 是 Python BLE 测试客户端，使用 `bleak` 库，项目结构独立（`pyproject.toml`、`uv.lock`）。不参与 ESP-IDF 构建。开发固件时无需关注其代码。
