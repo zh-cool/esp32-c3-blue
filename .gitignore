@@ -5,10 +5,9 @@ sdkconfig
 # IDE / LSP
 .vscode/*
 !.vscode/settings.json
+!.vscode/c_cpp_properties.json
 .cache/
 
-# build directory (just in case)
-build/
 compile_commands.json
 .idea/
 *.swp

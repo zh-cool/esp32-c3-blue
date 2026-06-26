@@ -1,0 +1,15 @@
+{
+    "configurations": [
+        {
+            "name": "ESP32-C3",
+            "compilerPath": "/home/austin/.espressif/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-gcc",
+            "compileCommands": "${workspaceFolder}/compile_commands.json",
+            "intelliSenseMode": "linux-gcc-arm",
+            "cStandard": "c17",
+            "defines": [
+                "ESP_PLATFORM"
+            ]
+        }
+    ],
+    "version": 4
+}
