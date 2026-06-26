@@ -3,11 +3,13 @@ build/
 sdkconfig
 
 # IDE / LSP
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .cache/
 
 # build directory (just in case)
 build/
+compile_commands.json
 .idea/
 *.swp
 *.swo
