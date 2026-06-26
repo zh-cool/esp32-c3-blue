@@ -77,6 +77,15 @@ static void timer_callback(TimerHandle_t xTimer)
     }
 }
 
+/* 描述符访问回调 — 返回特征值名称 */
+static int desc_access(uint16_t conn_handle, uint16_t attr_handle,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    const char *name = (const char *)arg;
+    return os_mbuf_append(ctxt->om, name, strlen(name))
+           ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
+}
+
 /* ======================== GATT 访问回调 ======================== */
 
 static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -137,11 +146,27 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_TX),
                 .access_cb = gatt_svc_access,
                 .flags = BLE_GATT_CHR_F_WRITE,
+                .descriptors = (struct ble_gatt_dsc_def[]) { {
+                    .uuid = BLE_UUID16_DECLARE(0x2901),
+                    .att_flags = BLE_ATT_F_READ,
+                    .access_cb = desc_access,
+                    .arg = (void *)"TX Data",
+                }, {
+                    0,
+                } },
             }, {
                 /* RX: ESP32 -> 手机（可读 + 通知） */
                 .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
                 .access_cb = gatt_svc_access,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .descriptors = (struct ble_gatt_dsc_def[]) { {
+                    .uuid = BLE_UUID16_DECLARE(0x2901),
+                    .att_flags = BLE_ATT_F_READ,
+                    .access_cb = desc_access,
+                    .arg = (void *)"RX Data",
+                }, {
+                    0,
+                } },
             }, {
                 0,
             },
