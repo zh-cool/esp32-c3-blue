@@ -3,6 +3,7 @@
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 
@@ -29,6 +30,17 @@ static char s_rx_buf[256];
 
 /* RX 特征值句柄（用于发送通知） */
 static uint16_t s_chr_rx_handle;
+
+/* 已连接的手机句柄列表（最大 3 个） */
+#define MAX_PEERS 3
+static uint16_t s_peers[MAX_PEERS];
+static int s_peer_count;
+
+/* 通知计数器 */
+static uint32_t s_notify_count;
+
+/* 定时器句柄 */
+static TimerHandle_t s_timer;
 
 /* 前向声明 */
 static void adv_start(void);
@@ -91,6 +103,44 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
     },
 };
 
+/* ======================== 通知发送 ======================== */
+
+static void send_notification_to_peer(uint16_t conn_handle)
+{
+    struct os_mbuf *om;
+    char buf[32];
+    int len;
+
+    if (s_chr_rx_handle == 0)
+        return;
+
+    len = snprintf(buf, sizeof(buf), "Hello %lu", (unsigned long)s_notify_count);
+    om = ble_hs_mbuf_from_flat(buf, len);
+    if (om == NULL) {
+        ESP_LOGE(TAG, "分配 mbuf 失败");
+        return;
+    }
+
+    int rc = ble_gatts_notify_custom(conn_handle, s_chr_rx_handle, om);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "通知发送失败 (conn=%d, rc=%d)", conn_handle, rc);
+        /* 失败时释放 mbuf */
+        os_mbuf_free_chain(om);
+    }
+}
+
+static void timer_callback(TimerHandle_t xTimer)
+{
+    if (s_peer_count == 0)
+        return;
+
+    s_notify_count++;
+
+    for (int i = 0; i < s_peer_count; i++) {
+        send_notification_to_peer(s_peers[i]);
+    }
+}
+
 /* ======================== GAP 事件 ======================== */
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg)
@@ -99,15 +149,31 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
-            ESP_LOGI(TAG, "手机已连接 (conn_handle=%d)", event->connect.conn_handle);
+            uint16_t handle = event->connect.conn_handle;
+            ESP_LOGI(TAG, "手机已连接 (conn_handle=%d)", handle);
+            /* 记录已连接手机 */
+            if (s_peer_count < MAX_PEERS) {
+                s_peers[s_peer_count++] = handle;
+                ESP_LOGI(TAG, "当前连接数: %d", s_peer_count);
+            }
             /* 连接会终止广播, 需要重新开始让更多手机发现 */
             adv_start();
         }
         return 0;
 
-    case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "手机已断开 (reason=%d)", event->disconnect.reason);
+    case BLE_GAP_EVENT_DISCONNECT: {
+        uint16_t handle = event->disconnect.conn.conn_handle;
+        ESP_LOGI(TAG, "手机已断开 (conn=%d, reason=%d)", handle, event->disconnect.reason);
+        /* 从列表中移除 */
+        for (int i = 0; i < s_peer_count; i++) {
+            if (s_peers[i] == handle) {
+                s_peers[i] = s_peers[--s_peer_count];
+                break;
+            }
+        }
+        ESP_LOGI(TAG, "当前连接数: %d", s_peer_count);
         return 0;
+    }
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
         ESP_LOGI(TAG, "广播结束, 重新开始");
@@ -249,6 +315,13 @@ void app_main(void)
     ESP_LOGI(TAG, "  TX    : 0xFF01 (手机写)");
     ESP_LOGI(TAG, "  RX    : 0xFF02 (手机读/通知)");
     ESP_LOGI(TAG, "=================================");
+
+    /* 创建定时器: 每 1 秒向所有手机发送通知 */
+    s_timer = xTimerCreate("notify", pdMS_TO_TICKS(1000), pdTRUE,
+                           NULL, timer_callback);
+    if (s_timer != NULL) {
+        xTimerStart(s_timer, 0);
+    }
 
     ble_app_init();
 }
