@@ -3,6 +3,7 @@
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 
@@ -24,14 +25,57 @@ static const char *TAG = "BLUE";
 #define GATT_CHR_UUID_TX    0xFF01   /* 手机 -> ESP32（写）*/
 #define GATT_CHR_UUID_RX    0xFF02   /* ESP32 -> 手机（读/通知）*/
 
-/* 接收缓冲区 */
-static char s_rx_buf[256];
-
 /* RX 特征值句柄（用于发送通知） */
 static uint16_t s_chr_rx_handle;
 
+/* 已连接手机句柄列表 */
+#define MAX_PEERS 3
+static uint16_t s_peers[MAX_PEERS];
+static int s_peer_count;
+
+/* 通知计数器 + 定时器 */
+static uint32_t s_notify_count;
+static TimerHandle_t s_timer;
+
 /* 前向声明 */
 static void adv_start(void);
+
+/* ======================== 通知发送 ======================== */
+
+static void send_notification_to_peer(uint16_t conn_handle)
+{
+    struct os_mbuf *om;
+    char buf[32];
+    int len;
+
+    if (s_chr_rx_handle == 0)
+        return;
+
+    len = snprintf(buf, sizeof(buf), "Hello %lu", (unsigned long)s_notify_count);
+    om = ble_hs_mbuf_from_flat(buf, len);
+    if (om == NULL) {
+        ESP_LOGE(TAG, "分配 mbuf 失败");
+        return;
+    }
+
+    int rc = ble_gatts_notify_custom(conn_handle, s_chr_rx_handle, om);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "通知发送失败 (conn=%d, rc=%d)", conn_handle, rc);
+        os_mbuf_free_chain(om);
+    }
+}
+
+static void timer_callback(TimerHandle_t xTimer)
+{
+    if (s_peer_count == 0)
+        return;
+
+    s_notify_count++;
+
+    for (int i = 0; i < s_peer_count; i++) {
+        send_notification_to_peer(s_peers[i]);
+    }
+}
 
 /* ======================== GATT 访问回调 ======================== */
 
@@ -42,18 +86,34 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
 
     case BLE_GATT_ACCESS_OP_WRITE_CHR: {
         /* 手机写入数据到 TX 特征值 */
+        char buf[16];
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-        if (len > sizeof(s_rx_buf) - 1)
-            len = sizeof(s_rx_buf) - 1;
-        ble_hs_mbuf_to_flat(ctxt->om, s_rx_buf, len, NULL);
-        s_rx_buf[len] = '\0';
+        if (len > sizeof(buf) - 1)
+            len = sizeof(buf) - 1;
+        ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
+        buf[len] = '\0';
 
-        ESP_LOGI(TAG, "收到 (%d 字节): %s", len, s_rx_buf);
+        ESP_LOGI(TAG, "收到: %s", buf);
+
+        /* Y -> 开始推送, N -> 停止推送 */
+        if (len == 1) {
+            if (buf[0] == 'Y' || buf[0] == 'y') {
+                if (s_timer != NULL) {
+                    s_notify_count = 0;
+                    xTimerStart(s_timer, 0);
+                    ESP_LOGI(TAG, "定时通知已启动 (每 5 秒)");
+                }
+            } else if (buf[0] == 'N' || buf[0] == 'n') {
+                if (s_timer != NULL) {
+                    xTimerStop(s_timer, 0);
+                    ESP_LOGI(TAG, "定时通知已停止");
+                }
+            }
+        }
         return 0;
     }
 
     case BLE_GATT_ACCESS_OP_READ_CHR: {
-        /* 手机读取 RX 特征值 */
         static const char resp[] = "Hello from ESP32-C3!";
         int rc = os_mbuf_append(ctxt->om, resp, strlen(resp));
         return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
@@ -83,11 +143,11 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .access_cb = gatt_svc_access,
                 .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
             }, {
-                0, /* 终止 */
+                0,
             },
         },
     }, {
-        0, /* 终止 */
+        0,
     },
 };
 
@@ -99,18 +159,33 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
-            ESP_LOGI(TAG, "手机已连接 (conn_handle=%d)", event->connect.conn_handle);
-            /* 连接会终止广播, 需要重新开始让更多手机发现 */
+            uint16_t handle = event->connect.conn_handle;
+            ESP_LOGI(TAG, "手机已连接 (conn_handle=%d)", handle);
+            if (s_peer_count < MAX_PEERS) {
+                s_peers[s_peer_count++] = handle;
+            }
             adv_start();
         }
         return 0;
 
-    case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "手机已断开 (reason=%d)", event->disconnect.reason);
+    case BLE_GAP_EVENT_DISCONNECT: {
+        uint16_t handle = event->disconnect.conn.conn_handle;
+        ESP_LOGI(TAG, "手机已断开 (conn=%d, reason=%d)", handle, event->disconnect.reason);
+        for (int i = 0; i < s_peer_count; i++) {
+            if (s_peers[i] == handle) {
+                s_peers[i] = s_peers[--s_peer_count];
+                break;
+            }
+        }
+        /* 所有手机都断开时停止定时器 */
+        if (s_peer_count == 0 && s_timer != NULL) {
+            xTimerStop(s_timer, 0);
+            ESP_LOGI(TAG, "无连接, 定时通知已停止");
+        }
         return 0;
+    }
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        ESP_LOGI(TAG, "广播结束, 重新开始");
         adv_start();
         return 0;
 
@@ -129,7 +204,6 @@ static void adv_start(void)
 
     const char *name = ble_svc_gap_device_name();
 
-    /* ---- 广播包 ---- */
     memset(&fields, 0, sizeof(fields));
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.tx_pwr_lvl_is_present = 1;
@@ -137,8 +211,6 @@ static void adv_start(void)
     fields.name = (uint8_t *)name;
     fields.name_len = strlen(name);
     fields.name_is_complete = 1;
-
-    /* 广播服务 UUID */
     fields.uuids16 = (ble_uuid16_t[]) { BLE_UUID16_INIT(GATT_SVC_UUID) };
     fields.num_uuids16 = 1;
     fields.uuids16_is_complete = 1;
@@ -149,7 +221,6 @@ static void adv_start(void)
         return;
     }
 
-    /* ---- 启动广播 ---- */
     memset(&adv_params, 0, sizeof(adv_params));
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
     adv_params.disc_mode = BLE_GAP_DISC_MODE_GEN;
@@ -159,35 +230,22 @@ static void adv_start(void)
     if (rc == 0) {
         ESP_LOGI(TAG, "广播中: %s", name);
     } else if (rc == BLE_HS_EALREADY) {
-        /* 已在广播中, 无需处理 */
     } else {
         ESP_LOGE(TAG, "启动广播失败 (rc=%d)", rc);
     }
 }
 
-/* ======================== NimBLE 主机同步回调 ========================
- * 在 NimBLE 主机与蓝牙控制器同步完成后调用。
- * 此时才能安全调用 GATT/GAP API。
- */
+/* ======================== NimBLE 同步回调 ======================== */
 
 static void ble_host_sync(void)
 {
-    int rc;
-
-    ESP_LOGI(TAG, "NimBLE 主机已同步");
-
-    /* 查找 RX 特征值句柄（用于发送通知） */
-    rc = ble_gatts_find_chr(
+    int rc = ble_gatts_find_chr(
         BLE_UUID16_DECLARE(GATT_SVC_UUID),
         BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
         NULL, &s_chr_rx_handle);
     if (rc != 0) {
-        ESP_LOGW(TAG, "未找到 RX 特征值句柄 (rc=%d)", rc);
-    } else {
-        ESP_LOGI(TAG, "RX 特征值句柄: %d", s_chr_rx_handle);
+        ESP_LOGW(TAG, "未找到 RX 句柄 (rc=%d)", rc);
     }
-
-    /* 开始广播 */
     adv_start();
 }
 
@@ -203,30 +261,16 @@ static void ble_host_task(void *param)
 
 static void ble_app_init(void)
 {
-    int rc;
-
-    /* 初始化 NimBLE 主机 */
+    ble_svc_gap_device_name_set(DEVICE_NAME);
     nimble_port_init();
 
-    /* 设置 GAP 设备名称 */
-    ble_svc_gap_device_name_set(DEVICE_NAME);
-
-    /* 注册主机同步回调 */
     ble_hs_cfg.sync_cb = ble_host_sync;
 
-    /* 注册 GATT 服务 */
-    rc = ble_gatts_count_cfg(gatt_svcs);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "GATT 计数失败 (rc=%d)", rc);
-        return;
-    }
+    int rc = ble_gatts_count_cfg(gatt_svcs);
+    if (rc != 0) { ESP_LOGE(TAG, "GATT 计数失败 (rc=%d)", rc); return; }
     rc = ble_gatts_add_svcs(gatt_svcs);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "GATT 注册失败 (rc=%d)", rc);
-        return;
-    }
+    if (rc != 0) { ESP_LOGE(TAG, "GATT 注册失败 (rc=%d)", rc); return; }
 
-    /* 启动 NimBLE 主机任务（之后 ble_host_sync 会被异步调用） */
     nimble_port_freertos_init(ble_host_task);
 }
 
@@ -234,7 +278,6 @@ static void ble_app_init(void)
 
 void app_main(void)
 {
-    /* 初始化 NVS（NimBLE 需要用于存储 bonding 信息） */
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -243,12 +286,14 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "  ESP32-C3 NimBLE 示例启动");
-    ESP_LOGI(TAG, "  设备名: %s", DEVICE_NAME);
-    ESP_LOGI(TAG, "  服务  : 0x00FF");
-    ESP_LOGI(TAG, "  TX    : 0xFF01 (手机写)");
-    ESP_LOGI(TAG, "  RX    : 0xFF02 (手机读/通知)");
+    ESP_LOGI(TAG, "  ESP32-C3 NimBLE");
+    ESP_LOGI(TAG, "  向 TX(0xFF01) 写 Y -> 每 5 秒推送");
+    ESP_LOGI(TAG, "  向 TX(0xFF01) 写 N -> 停止推送");
     ESP_LOGI(TAG, "=================================");
+
+    /* 创建定时器（5 秒周期）, 初始不启动 */
+    s_timer = xTimerCreate("notify", pdMS_TO_TICKS(5000), pdTRUE,
+                           NULL, timer_callback);
 
     ble_app_init();
 }
