@@ -3,12 +3,73 @@
         {
             "name": "ESP32-C3",
             "compilerPath": "/home/austin/.espressif/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-gcc",
-            "compileCommands": "${workspaceFolder}/compile_commands.json",
             "intelliSenseMode": "linux-gcc-arm",
             "cStandard": "c17",
             "defines": [
-                "ESP_PLATFORM"
-            ]
+                "ESP_PLATFORM",
+                "CONFIG_BT_ENABLED=1",
+                "CONFIG_BT_NIMBLE_ENABLED=1"
+            ],
+            "includePath": [
+                "${workspaceFolder}/build/config",
+                "${workspaceFolder}/main",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/nvs_flash/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/util/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/port/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/porting/npl/freertos/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gap/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gatt/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/transport/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/porting/nimble/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/esp-hci/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/include/esp32c3/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/porting/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/newlib/platform_include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/freertos/FreeRTOS-Kernel/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/freertos/config/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/freertos/config/include/freertos",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/freertos/FreeRTOS-Kernel/portable/riscv/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/freertos/esp_additions/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_hw_support/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_hw_support/include/soc",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_rom/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_rom/esp32c3/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_common/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_system/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_event/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_timer/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_wifi/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/hal/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/hal/esp32c3/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/soc/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/soc/esp32c3",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/heap/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/log/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/riscv/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/lwip/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_netif/include"
+            ],
+            "browse": {
+                "path": [
+                    "${workspaceFolder}/build/config",
+                    "${workspaceFolder}/main",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gap/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/services/gatt/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/nimble/nimble/host/util/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/freertos/FreeRTOS-Kernel/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/newlib/platform_include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_common/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_hw_support/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_rom/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/soc/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/log/include",
+                    "/home/austin/.espressif/v5.5.4/esp-idf/components/riscv/include"
+                ]
+            }
         }
     ],
     "version": 4
