@@ -106,6 +106,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG, "手机已断开 (reason=%d)", event->disconnect.reason);
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
