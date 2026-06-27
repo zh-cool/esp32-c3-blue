@@ -3,7 +3,6 @@
 #include "sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "freertos/timers.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 
@@ -33,49 +32,8 @@ static uint16_t s_chr_rx_handle;
 static uint16_t s_peers[MAX_PEERS];
 static int s_peer_count;
 
-/* 通知计数器 + 定时器 */
-static uint32_t s_notify_count;
-static TimerHandle_t s_timer;
-
 /* 前向声明 */
 static void adv_start(void);
-
-/* ======================== 通知发送 ======================== */
-
-static void send_notification_to_peer(uint16_t conn_handle)
-{
-    struct os_mbuf *om;
-    char buf[32];
-    int len;
-
-    if (s_chr_rx_handle == 0)
-        return;
-
-    len = snprintf(buf, sizeof(buf), "Hello %lu", (unsigned long)s_notify_count);
-    om = ble_hs_mbuf_from_flat(buf, len);
-    if (om == NULL) {
-        ESP_LOGE(TAG, "分配 mbuf 失败");
-        return;
-    }
-
-    int rc = ble_gatts_notify_custom(conn_handle, s_chr_rx_handle, om);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "通知发送失败 (conn=%d, rc=%d)", conn_handle, rc);
-        os_mbuf_free_chain(om);
-    }
-}
-
-static void timer_callback(TimerHandle_t xTimer)
-{
-    if (s_peer_count == 0)
-        return;
-
-    s_notify_count++;
-
-    for (int i = 0; i < s_peer_count; i++) {
-        send_notification_to_peer(s_peers[i]);
-    }
-}
 
 /* 描述符访问回调 — 返回特征值名称 */
 static int desc_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -95,7 +53,7 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
 
     case BLE_GATT_ACCESS_OP_WRITE_CHR: {
         /* 手机写入数据到 TX 特征值 */
-        char buf[16];
+        char buf[128];
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
         if (len > sizeof(buf) - 1)
             len = sizeof(buf) - 1;
@@ -103,22 +61,6 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
         buf[len] = '\0';
 
         ESP_LOGI(TAG, "收到: %s", buf);
-
-        /* Y -> 开始推送, N -> 停止推送 */
-        if (len == 1) {
-            if (buf[0] == 'Y' || buf[0] == 'y') {
-                if (s_timer != NULL) {
-                    s_notify_count = 0;
-                    xTimerStart(s_timer, 0);
-                    ESP_LOGI(TAG, "定时通知已启动 (每 5 秒)");
-                }
-            } else if (buf[0] == 'N' || buf[0] == 'n') {
-                if (s_timer != NULL) {
-                    xTimerStop(s_timer, 0);
-                    ESP_LOGI(TAG, "定时通知已停止");
-                }
-            }
-        }
         return 0;
     }
 
@@ -201,11 +143,6 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
                 s_peers[i] = s_peers[--s_peer_count];
                 break;
             }
-        }
-        /* 所有手机都断开时停止定时器 */
-        if (s_peer_count == 0 && s_timer != NULL) {
-            xTimerStop(s_timer, 0);
-            ESP_LOGI(TAG, "无连接, 定时通知已停止");
         }
         return 0;
     }
@@ -311,14 +248,10 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "  ESP32-C3 NimBLE");
-    ESP_LOGI(TAG, "  向 TX(0xFF01) 写 Y -> 每 5 秒推送");
-    ESP_LOGI(TAG, "  向 TX(0xFF01) 写 N -> 停止推送");
+    ESP_LOGI(TAG, "  ESP32-C3 NimBLE 已启动");
+    ESP_LOGI(TAG, "  TX(0xFF01): 手机写数据");
+    ESP_LOGI(TAG, "  RX(0xFF02): 手机读/订阅通知");
     ESP_LOGI(TAG, "=================================");
-
-    /* 创建定时器（5 秒周期）, 初始不启动 */
-    s_timer = xTimerCreate("notify", pdMS_TO_TICKS(5000), pdTRUE,
-                           NULL, timer_callback);
 
     ble_app_init();
 }
