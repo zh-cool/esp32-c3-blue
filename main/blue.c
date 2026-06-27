@@ -4,7 +4,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include "esp_ota_ops.h"
 #include "esp_app_desc.h"
 #include "nvs_flash.h"
 
@@ -22,6 +21,9 @@
 #include "pb_encode.h"
 #include "led_control.pb.h"
 
+/* 业务模块 */
+#include "ota.h"
+
 static const char *TAG = "BLUE";
 
 /* ======================== 常量 ======================== */
@@ -30,205 +32,24 @@ static const char *TAG = "BLUE";
 
 #define GATT_SVC_UUID       0x00FF
 #define GATT_CHR_UUID_TX    0xFF01
-#define GATT_CHR_UUID_RX    0xFF02
 #define GATT_CHR_UUID_DATA  0xFF03
 
 /* ======================== 全局状态 ======================== */
 
-static uint16_t s_chr_data_handle;  /* Custom Data (通知+读写) */
+static uint16_t s_data_handle;  /* Custom Data 句柄 */
 
 #define MAX_PEERS 3
 static uint16_t s_peers[MAX_PEERS];
 static int s_peer_count;
 
-/* OTA 状态 */
-static bool s_ota_in_progress;
-static esp_ota_handle_t s_ota_handle;
-static const esp_partition_t *s_ota_partition;
-static uint32_t s_ota_total_size;
-static uint32_t s_ota_received;
-
 /* 前向声明 */
 static void adv_start(void);
 
-/* ======================== 字符串 callback helper ======================== */
-
-static bool str_callback(pb_ostream_t *stream, const pb_field_t *field,
-                         void * const *arg)
-{
-    const char *str = (const char *)(*arg);
-    if (!str) str = "";
-    if (!pb_encode_string(stream, (uint8_t *)str, strlen(str)))
-        return false;
-    return true;
-}
-
-/* ======================== 通知发送 ======================== */
-
-static void send_notify(uint16_t conn_handle, const uint8_t *data, size_t len)
-{
-    if (s_chr_data_handle == 0) return;
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
-    if (!om) { ESP_LOGE(TAG, "mbuf 分配失败"); return; }
-    int rc = ble_gatts_notify_custom(conn_handle, s_chr_data_handle, om);
-    if (rc) os_mbuf_free_chain(om);
-}
-
-/* ======================== OTA 命令处理 ======================== */
-
-static void handle_ota_cmd(uint16_t conn_handle, led_control_OTARequest *req)
-{
-    led_control_OTAResponse ota_resp = led_control_OTAResponse_init_default;
-    const char *err_msg = NULL;
-
-    ota_resp.error = led_control_ErrorCode_OK;
-    ota_resp.done = false;
-    ota_resp.received_bytes = s_ota_received;
-    ota_resp.total_bytes = s_ota_total_size;
-    ota_resp.percent = (s_ota_total_size > 0)
-        ? (s_ota_received * 100 / s_ota_total_size) : 0;
-
-    switch (req->cmd) {
-
-    case led_control_OTARequest_Cmd_CMD_START: {
-        if (s_ota_in_progress) {
-            ota_resp.error = led_control_ErrorCode_ERR_OTA_ALREADY_STARTED;
-            err_msg = "OTA already in progress";
-            ota_resp.received_bytes = 0;
-            ota_resp.percent = 0;
-            break;
-        }
-        if (req->which_params != led_control_OTARequest_start_params_tag) {
-            ota_resp.error = led_control_ErrorCode_ERR_INVALID_PARAM;
-            err_msg = "missing start_params";
-            break;
-        }
-        s_ota_total_size = req->params.start_params.total_size;
-        s_ota_received = 0;
-
-        s_ota_partition = esp_ota_get_next_update_partition(NULL);
-        if (!s_ota_partition) {
-            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
-            err_msg = "no OTA partition";
-            break;
-        }
-        esp_err_t err = esp_ota_begin(s_ota_partition, s_ota_total_size, &s_ota_handle);
-        if (err != ESP_OK) {
-            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
-            err_msg = "ota_begin failed";
-            break;
-        }
-        s_ota_in_progress = true;
-        ota_resp.received_bytes = 0;
-        ota_resp.percent = 0;
-        ESP_LOGI(TAG, "OTA START: total=%u, partition=%s",
-                 s_ota_total_size, s_ota_partition->label);
-        break;
-    }
-
-    case led_control_OTARequest_Cmd_CMD_DATA: {
-        if (!s_ota_in_progress) {
-            ota_resp.error = led_control_ErrorCode_ERR_OTA_NOT_STARTED;
-            err_msg = "OTA not started";
-            break;
-        }
-        err_msg = "data_params not provided";
-        ota_resp.error = led_control_ErrorCode_ERR_INVALID_PARAM;
-        break;
-    }
-
-    case led_control_OTARequest_Cmd_CMD_COMPLETE: {
-        if (!s_ota_in_progress) {
-            ota_resp.error = led_control_ErrorCode_ERR_OTA_NOT_STARTED;
-            err_msg = "OTA not started";
-            break;
-        }
-        esp_err_t err = esp_ota_end(s_ota_handle);
-        s_ota_in_progress = false;
-        if (err != ESP_OK) {
-            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
-            err_msg = "ota_end failed";
-            break;
-        }
-        err = esp_ota_set_boot_partition(s_ota_partition);
-        if (err != ESP_OK) {
-            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
-            err_msg = "set_boot failed";
-            break;
-        }
-        ota_resp.received_bytes = s_ota_received;
-        ota_resp.percent = 100;
-        ota_resp.done = true;
-        err_msg = "OTA complete, restarting...";
-        ESP_LOGI(TAG, "OTA COMPLETE: %u bytes", s_ota_received);
-
-        /* 先发送响应, 再重启 */
-        led_control_EnvelopeResponse env_resp = led_control_EnvelopeResponse_init_default;
-        env_resp.error = led_control_ErrorCode_OK;
-        env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
-        env_resp.result.ota_result = ota_resp;
-        env_resp.error_msg.arg = (void *)err_msg;
-        env_resp.error_msg.funcs.encode = str_callback;
-
-        /* 包装到 Envelope 中发送 */
-        uint8_t buf[256];
-        pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
-        led_control_Envelope env = led_control_Envelope_init_default;
-        env.protocol_version = 2;
-        env.which_payload = led_control_Envelope_response_tag;
-        env.payload.response = env_resp;
-
-        if (pb_encode(&stream, led_control_Envelope_fields, &env)) {
-            send_notify(conn_handle, buf, stream.bytes_written);
-        }
-        vTaskDelay(pdMS_TO_TICKS(500));
-        esp_restart();
-        return;
-    }
-
-    case led_control_OTARequest_Cmd_CMD_ABORT:
-        if (s_ota_in_progress) {
-            esp_ota_abort(s_ota_handle);
-            s_ota_in_progress = false;
-            ESP_LOGI(TAG, "OTA ABORTED");
-        }
-        err_msg = "OTA aborted";
-        break;
-
-    default:
-        ota_resp.error = led_control_ErrorCode_ERR_UNKNOWN;
-        err_msg = "unknown cmd";
-        break;
-    }
-
-    /* 构造响应信封 */
-    led_control_EnvelopeResponse env_resp = led_control_EnvelopeResponse_init_default;
-    env_resp.error = ota_resp.error;
-    env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
-    env_resp.result.ota_result = ota_resp;
-    env_resp.error_msg.arg = err_msg ? (void *)err_msg : (void *)"";
-    env_resp.error_msg.funcs.encode = str_callback;
-
-    uint8_t buf[256];
-    pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
-    led_control_Envelope env = led_control_Envelope_init_default;
-    env.protocol_version = 2;
-    env.which_payload = led_control_Envelope_response_tag;
-    env.payload.response = env_resp;
-
-    if (pb_encode(&stream, led_control_Envelope_fields, &env)) {
-        send_notify(conn_handle, buf, stream.bytes_written);
-        ESP_LOGI(TAG, "OTA 响应: error=%d, %u%%", ota_resp.error, ota_resp.percent);
-    } else {
-        ESP_LOGE(TAG, "编码 Envelope 失败: %s", PB_GET_ERROR(&stream));
-    }
-}
-
 /* ======================== 处理 Custom Data 写入 ======================== */
 
-static void handle_custom_data_write(uint16_t conn_handle, const uint8_t *data, size_t len)
+static void handle_custom_data(uint16_t conn_handle, const uint8_t *buf, size_t len)
 {
-    pb_istream_t stream = pb_istream_from_buffer(data, len);
+    pb_istream_t stream = pb_istream_from_buffer(buf, len);
     led_control_Envelope env = led_control_Envelope_init_default;
 
     if (!pb_decode(&stream, led_control_Envelope_fields, &env)) {
@@ -240,15 +61,11 @@ static void handle_custom_data_write(uint16_t conn_handle, const uint8_t *data, 
              env.protocol_version, env.request_id, env.which_payload);
 
     if (env.which_payload == led_control_Envelope_ota_tag) {
-        handle_ota_cmd(conn_handle, &env.payload.ota);
+        ota_handle_cmd(conn_handle, &env.payload.ota);
     } else {
         ESP_LOGW(TAG, "不支持的消息类型: %d", env.which_payload);
     }
 }
-
-/* ======================== CMD_DATA 分块写入 callback ========================
- * 这个 callback 在 decode 时由 nanopb 调用, 每次传入一分块数据
- */
 
 /* ======================== GATT 回调 ======================== */
 
@@ -269,26 +86,17 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
         if (len == 0) return 0;
 
-        if (attr_handle == s_chr_data_handle) {
-            /* Custom Data — 解析 Envelope */
+        if (attr_handle == s_data_handle) {
             uint8_t buf[1024];
             if (len > sizeof(buf)) len = sizeof(buf);
             ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
 
-            if (s_ota_in_progress && len < 1024) {
-                /* 走捷径: 直接当作 OTA DATA 块写入 */
-                esp_err_t err = esp_ota_write(s_ota_handle, buf, len);
-                if (err == ESP_OK) {
-                    s_ota_received += len;
-                    ESP_LOGI(TAG, "OTA DATA: +%u, total=%u, %u%%",
-                             len, s_ota_received,
-                             (s_ota_received * 100 / s_ota_total_size));
-                } else {
-                    ESP_LOGE(TAG, "ota_write 失败");
-                }
+            /* OTA 进行中 → 裸数据块写入 flash */
+            if (ota_is_in_progress()) {
+                ota_handle_data(conn_handle, buf, len);
             } else {
-                /* 尝试解析为 Envelope */
-                handle_custom_data_write(conn_handle, buf, len);
+                /* 解析 Envelope */
+                handle_custom_data(conn_handle, buf, len);
             }
             return 0;
         }
@@ -302,10 +110,8 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
         return 0;
     }
 
-    case BLE_GATT_ACCESS_OP_READ_CHR: {
-        /* 读 Data — 返回空（暂未实现） */
+    case BLE_GATT_ACCESS_OP_READ_CHR:
         return 0;
-    }
 
     default:
         return 0;
@@ -378,11 +184,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "已断开 (conn=%d, reason=%d)", h, event->disconnect.reason);
         for (int i = 0; i < s_peer_count; i++)
             if (s_peers[i] == h) { s_peers[i] = s_peers[--s_peer_count]; break; }
-        if (s_ota_in_progress) {
-            esp_ota_abort(s_ota_handle);
-            s_ota_in_progress = false;
-            ESP_LOGI(TAG, "OTA 终止 (断开)");
-        }
+        ota_on_disconnect();
         return 0;
     }
 
@@ -448,9 +250,12 @@ static void ble_host_sync(void)
 {
     ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
                        BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
-                       NULL, &s_chr_data_handle);
-    if (s_chr_data_handle == 0)
+                       NULL, &s_data_handle);
+    if (s_data_handle == 0) {
         ESP_LOGW(TAG, "未找到 DATA 句柄");
+    } else {
+        ota_set_data_handle(s_data_handle);
+    }
     adv_start();
 }
 
@@ -480,6 +285,8 @@ void app_main(void)
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    ota_init();
 
     ESP_LOGI(TAG, "====================================");
     ESP_LOGI(TAG, "  ESP32-C3 NimBLE + OTA");
