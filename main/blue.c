@@ -11,10 +11,26 @@
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
+#include "host/ble_att.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
 static const char *TAG = "BLUE";
+
+static const char *phy_str(uint8_t phy)
+{
+    switch (phy) {
+    case BLE_GAP_LE_PHY_1M:    return "1M";
+    case BLE_GAP_LE_PHY_2M:    return "2M";
+    case BLE_GAP_LE_PHY_CODED: return "Coded";
+    default:                    return "?";
+    }
+}
+
+static const char *role_str(uint8_t role)
+{
+    return role == BLE_GAP_ROLE_MASTER ? "主机" : "从机";
+}
 
 /* 设备名称 */
 #define DEVICE_NAME "ESP32-C3-Blue"
@@ -118,6 +134,29 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
     },
 };
 
+/* 打印连接参数 */
+static void print_conn_params(uint16_t conn_handle)
+{
+    struct ble_gap_conn_desc desc;
+    int rc = ble_gap_conn_find(conn_handle, &desc);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "获取连接描述符失败 (rc=%d)", rc);
+        return;
+    }
+
+    ESP_LOGI(TAG, "  Role:       %s", role_str(desc.role));
+    ESP_LOGI(TAG, "  连接间隔:   %u x 1.25ms = %.2fms",
+             desc.conn_itvl, desc.conn_itvl * 1.25f);
+    ESP_LOGI(TAG, "  连接延迟:   %u", desc.conn_latency);
+    ESP_LOGI(TAG, "  超时时间:   %u x 10ms = %ums",
+             desc.supervision_timeout, desc.supervision_timeout * 10);
+    ESP_LOGI(TAG, "  MTU:        %u bytes", ble_att_mtu(conn_handle));
+    ESP_LOGI(TAG, "  对端地址:   %02x:%02x:%02x:%02x:%02x:%02x",
+             desc.peer_ota_addr.val[5], desc.peer_ota_addr.val[4],
+             desc.peer_ota_addr.val[3], desc.peer_ota_addr.val[2],
+             desc.peer_ota_addr.val[1], desc.peer_ota_addr.val[0]);
+}
+
 /* ======================== GAP 事件 ======================== */
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg)
@@ -127,7 +166,8 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
             uint16_t handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "手机已连接 (conn_handle=%d)", handle);
+            ESP_LOGI(TAG, "=== 手机已连接 (conn_handle=%d) ===", handle);
+            print_conn_params(handle);
             if (s_peer_count < MAX_PEERS) {
                 s_peers[s_peer_count++] = handle;
             }
@@ -147,7 +187,20 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
         return 0;
     }
 
+    case BLE_GAP_EVENT_MTU:
+        ESP_LOGI(TAG, "MTU 更新: conn=%d, mtu=%u",
+                 event->mtu.conn_handle, event->mtu.value);
+        return 0;
+
+    case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
+        ESP_LOGI(TAG, "PHY 更新: conn=%d, TX=%s, RX=%s",
+                 event->phy_updated.conn_handle,
+                 phy_str(event->phy_updated.tx_phy),
+                 phy_str(event->phy_updated.rx_phy));
+        return 0;
+
     case BLE_GAP_EVENT_ADV_COMPLETE:
+        ESP_LOGI(TAG, "广播完成，状态：%d", event->adv_complete.reason);
         adv_start();
         return 0;
 
