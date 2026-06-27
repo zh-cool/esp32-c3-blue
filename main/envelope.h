@@ -10,7 +10,6 @@
  */
 void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len);
 
-/**
- * @brief 设置 Custom Data 特征值句柄（用于发送通知响应）
- */
-void envelope_set_data_handle(uint16_t handle);
+/** 响应缓冲区 — envelope/ota 模块将响应写入此处，blue.c 读取返回给手机 */
+extern uint8_t envelope_resp_buf[1024];
+extern uint16_t envelope_resp_len;

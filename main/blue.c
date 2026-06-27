@@ -78,6 +78,10 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
     }
 
     case BLE_GATT_ACCESS_OP_READ_CHR:
+        if (attr_handle == s_data_handle && envelope_resp_len > 0) {
+            os_mbuf_append(ctxt->om, envelope_resp_buf, envelope_resp_len);
+            envelope_resp_len = 0;
+        }
         return 0;
 
     default:
@@ -104,8 +108,7 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
             }, {
                 .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
                 .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE
-                       | BLE_GATT_CHR_F_NOTIFY,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
                 .descriptors = (struct ble_gatt_dsc_def[]) { {
                     .uuid = BLE_UUID16_DECLARE(0x2901),
                     .att_flags = BLE_ATT_F_READ,
@@ -218,11 +221,8 @@ static void ble_host_sync(void)
     ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
                        BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
                        NULL, &s_data_handle);
-    if (s_data_handle == 0) {
+    if (s_data_handle == 0)
         ESP_LOGW(TAG, "未找到 DATA 句柄");
-    } else {
-        envelope_set_data_handle(s_data_handle);
-    }
     adv_start();
 }
 

@@ -1,10 +1,5 @@
 #include <string.h>
 #include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-
-/* NimBLE */
-#include "host/ble_hs.h"
-#include "host/ble_gatt.h"
 
 /* Protobuf */
 #include "pb_encode.h"
@@ -16,19 +11,9 @@
 
 static const char *TAG = "ENV";
 
-/* Custom Data 特征值句柄 — 用于发送通知响应 */
-static uint16_t s_data_handle;
-
-/* ======================== 通知发送 ======================== */
-
-static void send_notify(uint16_t conn_handle, const uint8_t *data, size_t len)
-{
-    if (s_data_handle == 0) return;
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
-    if (!om) return;
-    int rc = ble_gatts_notify_custom(conn_handle, s_data_handle, om);
-    if (rc) os_mbuf_free_chain(om);
-}
+/* 响应缓冲区 */
+uint8_t envelope_resp_buf[1024];
+uint16_t envelope_resp_len;
 
 /* ======================== 字符串编码 callback ======================== */
 
@@ -39,71 +24,63 @@ static bool str_cb(pb_ostream_t *stream, const pb_field_t *field, void * const *
     return pb_encode_string(stream, (uint8_t *)s, strlen(s));
 }
 
-/* ======================== 发送 EnvelopeResponse ======================== */
+/* ======================== 存入响应缓冲区 ======================== */
 
-static void send_error(uint16_t conn_handle, uint32_t request_id,
-                       led_control_ErrorCode error, const char *msg)
+static void store_response(uint32_t request_id, led_control_ErrorCode error,
+                           const char *msg, led_control_EnvelopeResponse *resp)
 {
-    led_control_EnvelopeResponse resp = led_control_EnvelopeResponse_init_default;
-    resp.request_id = request_id;
-    resp.error = error;
-    resp.error_msg.arg = (void *)(msg ? msg : "");
-    resp.error_msg.funcs.encode = str_cb;
-    /* 无 result — 纯错误响应 */
+    if (!resp) {
+        /* 纯错误响应 */
+        led_control_EnvelopeResponse r = led_control_EnvelopeResponse_init_default;
+        r.request_id = request_id;
+        r.error = error;
+        r.error_msg.arg = (void *)(msg ? msg : "");
+        r.error_msg.funcs.encode = str_cb;
 
-    uint8_t buf[256];
-    pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+        led_control_Envelope env = led_control_Envelope_init_default;
+        env.protocol_version = 2;
+        env.request_id = request_id;
+        env.which_payload = led_control_Envelope_response_tag;
+        env.payload.response = r;
 
+        pb_ostream_t s = pb_ostream_from_buffer(envelope_resp_buf, sizeof(envelope_resp_buf));
+        if (pb_encode(&s, led_control_Envelope_fields, &env))
+            envelope_resp_len = s.bytes_written;
+        return;
+    }
+
+    /* 自定义响应 */
     led_control_Envelope env = led_control_Envelope_init_default;
     env.protocol_version = 2;
     env.request_id = request_id;
     env.which_payload = led_control_Envelope_response_tag;
-    env.payload.response = resp;
+    env.payload.response = *resp;
 
-    if (pb_encode(&stream, led_control_Envelope_fields, &env))
-        send_notify(conn_handle, buf, stream.bytes_written);
-    else
-        ESP_LOGE(TAG, "encode error: %s", PB_GET_ERROR(&stream));
-}
-
-static void send_ok(uint16_t conn_handle, uint32_t request_id,
-                    led_control_ErrorCode error, const char *msg)
-{
-    send_error(conn_handle, request_id, error, msg);
+    pb_ostream_t s = pb_ostream_from_buffer(envelope_resp_buf, sizeof(envelope_resp_buf));
+    if (pb_encode(&s, led_control_Envelope_fields, &env))
+        envelope_resp_len = s.bytes_written;
 }
 
 /* ======================== 各消息类型处理 ======================== */
 
-static void handle_get_device_info(uint16_t conn_handle, uint32_t req_id)
+static void handle_get_device_info(uint32_t req_id)
 {
-    /* TODO: 返回真实设备信息 */
-    led_control_GetDeviceInfoResponse dev_resp = led_control_GetDeviceInfoResponse_init_default;
-    led_control_DeviceInfo info = led_control_DeviceInfo_init_default;
-    info.fw_version = (pb_callback_t){.funcs.encode = str_cb, .arg = (void *)"1.0.0"};
-    dev_resp.info = info;
-
-    led_control_EnvelopeResponse resp = led_control_EnvelopeResponse_init_default;
-    resp.request_id = req_id;
-    resp.error = led_control_ErrorCode_OK;
-    resp.which_result = led_control_EnvelopeResponse_device_info_result_tag;
-    resp.result.device_info_result = dev_resp;
-
-    uint8_t buf[256];
-    pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
-    led_control_Envelope env = led_control_Envelope_init_default;
-    env.protocol_version = 2;
-    env.request_id = req_id;
-    env.which_payload = led_control_Envelope_response_tag;
-    env.payload.response = resp;
-
-    if (pb_encode(&stream, led_control_Envelope_fields, &env))
-        send_notify(conn_handle, buf, stream.bytes_written);
+    /* TODO: 填充真实设备信息 */
+    led_control_EnvelopeResponse r = led_control_EnvelopeResponse_init_default;
+    r.request_id = req_id;
+    r.error = led_control_ErrorCode_OK;
+    r.which_result = led_control_EnvelopeResponse_device_info_result_tag;
+    r.result.device_info_result.info.fw_version.arg = (void *)"1.0.0";
+    r.result.device_info_result.info.fw_version.funcs.encode = str_cb;
+    store_response(req_id, led_control_ErrorCode_OK, NULL, &r);
 }
 
 /* ======================== 主入口 ======================== */
 
 void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
 {
+    (void)conn_handle;
+
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     led_control_Envelope env = led_control_Envelope_init_default;
 
@@ -116,17 +93,16 @@ void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
 
     switch (env.which_payload) {
 
-    /* ---- OTA ---- */
     case led_control_Envelope_ota_tag:
-        ota_handle_envelope(conn_handle, data, len);
+        /* OTA 模块自己写入响应缓冲区 */
+        ota_handle_envelope(data, len);
         return;
 
-    /* ---- 查询 ---- */
     case led_control_Envelope_get_device_info_tag:
-        handle_get_device_info(conn_handle, env.request_id);
+        handle_get_device_info(env.request_id);
         return;
 
-    /* ---- 其他 -- 暂不支持 ---- */
+    /* 其他 — 暂不支持 */
     case led_control_Envelope_set_light_config_tag:
     case led_control_Envelope_set_channel_order_tag:
     case led_control_Envelope_scan_ic_tag:
@@ -140,21 +116,13 @@ void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
     case led_control_Envelope_list_scenes_tag:
     case led_control_Envelope_ping_tag:
     case led_control_Envelope_factory_reset_tag:
-        send_error(conn_handle, env.request_id,
-                   led_control_ErrorCode_ERR_NOT_SUPPORTED, "not implemented");
+        store_response(env.request_id, led_control_ErrorCode_ERR_NOT_SUPPORTED,
+                       "not implemented", NULL);
         return;
 
     default:
-        ESP_LOGW(TAG, "unknown type=%d", env.which_payload);
-        send_error(conn_handle, env.request_id,
-                   led_control_ErrorCode_ERR_UNKNOWN, "unknown message type");
+        store_response(env.request_id, led_control_ErrorCode_ERR_UNKNOWN,
+                       "unknown type", NULL);
         return;
     }
-}
-
-/* ======================== 初始化 ======================== */
-
-void envelope_set_data_handle(uint16_t handle)
-{
-    s_data_handle = handle;
 }
