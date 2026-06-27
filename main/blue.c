@@ -35,8 +35,7 @@ static const char *TAG = "BLUE";
 
 /* ======================== 全局状态 ======================== */
 
-static uint16_t s_chr_rx_handle;
-static uint16_t s_chr_data_handle;
+static uint16_t s_chr_data_handle;  /* Custom Data (通知+读写) */
 
 #define MAX_PEERS 3
 static uint16_t s_peers[MAX_PEERS];
@@ -68,10 +67,10 @@ static bool str_callback(pb_ostream_t *stream, const pb_field_t *field,
 
 static void send_notify(uint16_t conn_handle, const uint8_t *data, size_t len)
 {
-    if (s_chr_rx_handle == 0) return;
+    if (s_chr_data_handle == 0) return;
     struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
     if (!om) { ESP_LOGE(TAG, "mbuf 分配失败"); return; }
-    int rc = ble_gatts_notify_custom(conn_handle, s_chr_rx_handle, om);
+    int rc = ble_gatts_notify_custom(conn_handle, s_chr_data_handle, om);
     if (rc) os_mbuf_free_chain(om);
 }
 
@@ -304,10 +303,8 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
     }
 
     case BLE_GATT_ACCESS_OP_READ_CHR: {
-        if (attr_handle == s_chr_data_handle) return 0;
-        static const char resp[] = "Hello from ESP32-C3!";
-        return os_mbuf_append(ctxt->om, resp, strlen(resp))
-               ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
+        /* 读 Data — 返回空（暂未实现） */
+        return 0;
     }
 
     default:
@@ -332,19 +329,10 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                   .arg = (void *)"TX Data",
               }, { 0 } },
             }, {
-                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
-                .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .descriptors = (struct ble_gatt_dsc_def[]) { {
-                    .uuid = BLE_UUID16_DECLARE(0x2901),
-                    .att_flags = BLE_ATT_F_READ,
-                    .access_cb = desc_access,
-                    .arg = (void *)"RX Data",
-                }, { 0 } },
-            }, {
                 .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
                 .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE
+                       | BLE_GATT_CHR_F_NOTIFY,
                 .descriptors = (struct ble_gatt_dsc_def[]) { {
                     .uuid = BLE_UUID16_DECLARE(0x2901),
                     .att_flags = BLE_ATT_F_READ,
@@ -459,11 +447,10 @@ static void adv_start(void)
 static void ble_host_sync(void)
 {
     ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
-                       BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
-                       NULL, &s_chr_rx_handle);
-    ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
                        BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
                        NULL, &s_chr_data_handle);
+    if (s_chr_data_handle == 0)
+        ESP_LOGW(TAG, "未找到 DATA 句柄");
     adv_start();
 }
 
@@ -497,9 +484,8 @@ void app_main(void)
     ESP_LOGI(TAG, "====================================");
     ESP_LOGI(TAG, "  ESP32-C3 NimBLE + OTA");
     ESP_LOGI(TAG, "  FW: %s", esp_app_get_description()->version);
-    ESP_LOGI(TAG, "  TX(0xFF01)   : 文本写入");
-    ESP_LOGI(TAG, "  RX(0xFF02)   : 读/通知");
-    ESP_LOGI(TAG, "  Data(0xFF03) : Envelope protobuf");
+    ESP_LOGI(TAG, "  TX   (0xFF01): 文本写入");
+    ESP_LOGI(TAG, "  Data (0xFF03): 读写+通知 Envelope");
     ESP_LOGI(TAG, "====================================");
 
     ble_app_init();
