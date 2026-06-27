@@ -3,4 +3,4 @@ idf_component_register(SRCS "blue.c"
                     INCLUDE_DIRS "."
                     "proto-c"
                     REQUIRES bt
-                    PRIV_REQUIRES nvs_flash livekit__nanopb)
+                    PRIV_REQUIRES nvs_flash app_update livekit__nanopb)

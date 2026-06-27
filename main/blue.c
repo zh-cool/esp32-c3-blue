@@ -4,9 +4,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "nvs_flash.h"
 
-/* NimBLE 协议栈 */
+/* NimBLE */
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_hs.h"
@@ -15,7 +17,344 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+/* Protobuf */
+#include "pb_decode.h"
+#include "pb_encode.h"
+#include "led_control.pb.h"
+
 static const char *TAG = "BLUE";
+
+/* ======================== 常量 ======================== */
+
+#define DEVICE_NAME "ESP32-C3-Blue"
+
+#define GATT_SVC_UUID       0x00FF
+#define GATT_CHR_UUID_TX    0xFF01
+#define GATT_CHR_UUID_RX    0xFF02
+#define GATT_CHR_UUID_DATA  0xFF03
+
+/* ======================== 全局状态 ======================== */
+
+static uint16_t s_chr_rx_handle;
+static uint16_t s_chr_data_handle;
+
+#define MAX_PEERS 3
+static uint16_t s_peers[MAX_PEERS];
+static int s_peer_count;
+
+/* OTA 状态 */
+static bool s_ota_in_progress;
+static esp_ota_handle_t s_ota_handle;
+static const esp_partition_t *s_ota_partition;
+static uint32_t s_ota_total_size;
+static uint32_t s_ota_received;
+
+/* 前向声明 */
+static void adv_start(void);
+
+/* ======================== 字符串 callback helper ======================== */
+
+static bool str_callback(pb_ostream_t *stream, const pb_field_t *field,
+                         void * const *arg)
+{
+    const char *str = (const char *)(*arg);
+    if (!str) str = "";
+    if (!pb_encode_string(stream, (uint8_t *)str, strlen(str)))
+        return false;
+    return true;
+}
+
+/* ======================== 通知发送 ======================== */
+
+static void send_notify(uint16_t conn_handle, const uint8_t *data, size_t len)
+{
+    if (s_chr_rx_handle == 0) return;
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(data, len);
+    if (!om) { ESP_LOGE(TAG, "mbuf 分配失败"); return; }
+    int rc = ble_gatts_notify_custom(conn_handle, s_chr_rx_handle, om);
+    if (rc) os_mbuf_free_chain(om);
+}
+
+/* ======================== OTA 命令处理 ======================== */
+
+static void handle_ota_cmd(uint16_t conn_handle, led_control_OTARequest *req)
+{
+    led_control_OTAResponse ota_resp = led_control_OTAResponse_init_default;
+    const char *err_msg = NULL;
+
+    ota_resp.error = led_control_ErrorCode_OK;
+    ota_resp.done = false;
+    ota_resp.received_bytes = s_ota_received;
+    ota_resp.total_bytes = s_ota_total_size;
+    ota_resp.percent = (s_ota_total_size > 0)
+        ? (s_ota_received * 100 / s_ota_total_size) : 0;
+
+    switch (req->cmd) {
+
+    case led_control_OTARequest_Cmd_CMD_START: {
+        if (s_ota_in_progress) {
+            ota_resp.error = led_control_ErrorCode_ERR_OTA_ALREADY_STARTED;
+            err_msg = "OTA already in progress";
+            ota_resp.received_bytes = 0;
+            ota_resp.percent = 0;
+            break;
+        }
+        if (req->which_params != led_control_OTARequest_start_params_tag) {
+            ota_resp.error = led_control_ErrorCode_ERR_INVALID_PARAM;
+            err_msg = "missing start_params";
+            break;
+        }
+        s_ota_total_size = req->params.start_params.total_size;
+        s_ota_received = 0;
+
+        s_ota_partition = esp_ota_get_next_update_partition(NULL);
+        if (!s_ota_partition) {
+            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
+            err_msg = "no OTA partition";
+            break;
+        }
+        esp_err_t err = esp_ota_begin(s_ota_partition, s_ota_total_size, &s_ota_handle);
+        if (err != ESP_OK) {
+            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
+            err_msg = "ota_begin failed";
+            break;
+        }
+        s_ota_in_progress = true;
+        ota_resp.received_bytes = 0;
+        ota_resp.percent = 0;
+        ESP_LOGI(TAG, "OTA START: total=%u, partition=%s",
+                 s_ota_total_size, s_ota_partition->label);
+        break;
+    }
+
+    case led_control_OTARequest_Cmd_CMD_DATA: {
+        if (!s_ota_in_progress) {
+            ota_resp.error = led_control_ErrorCode_ERR_OTA_NOT_STARTED;
+            err_msg = "OTA not started";
+            break;
+        }
+        err_msg = "data_params not provided";
+        ota_resp.error = led_control_ErrorCode_ERR_INVALID_PARAM;
+        break;
+    }
+
+    case led_control_OTARequest_Cmd_CMD_COMPLETE: {
+        if (!s_ota_in_progress) {
+            ota_resp.error = led_control_ErrorCode_ERR_OTA_NOT_STARTED;
+            err_msg = "OTA not started";
+            break;
+        }
+        esp_err_t err = esp_ota_end(s_ota_handle);
+        s_ota_in_progress = false;
+        if (err != ESP_OK) {
+            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
+            err_msg = "ota_end failed";
+            break;
+        }
+        err = esp_ota_set_boot_partition(s_ota_partition);
+        if (err != ESP_OK) {
+            ota_resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
+            err_msg = "set_boot failed";
+            break;
+        }
+        ota_resp.received_bytes = s_ota_received;
+        ota_resp.percent = 100;
+        ota_resp.done = true;
+        err_msg = "OTA complete, restarting...";
+        ESP_LOGI(TAG, "OTA COMPLETE: %u bytes", s_ota_received);
+
+        /* 先发送响应, 再重启 */
+        led_control_EnvelopeResponse env_resp = led_control_EnvelopeResponse_init_default;
+        env_resp.error = led_control_ErrorCode_OK;
+        env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
+        env_resp.result.ota_result = ota_resp;
+        env_resp.error_msg.arg = (void *)err_msg;
+        env_resp.error_msg.funcs.encode = str_callback;
+
+        /* 包装到 Envelope 中发送 */
+        uint8_t buf[256];
+        pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+        led_control_Envelope env = led_control_Envelope_init_default;
+        env.protocol_version = 2;
+        env.which_payload = led_control_Envelope_response_tag;
+        env.payload.response = env_resp;
+
+        if (pb_encode(&stream, led_control_Envelope_fields, &env)) {
+            send_notify(conn_handle, buf, stream.bytes_written);
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+        return;
+    }
+
+    case led_control_OTARequest_Cmd_CMD_ABORT:
+        if (s_ota_in_progress) {
+            esp_ota_abort(s_ota_handle);
+            s_ota_in_progress = false;
+            ESP_LOGI(TAG, "OTA ABORTED");
+        }
+        err_msg = "OTA aborted";
+        break;
+
+    default:
+        ota_resp.error = led_control_ErrorCode_ERR_UNKNOWN;
+        err_msg = "unknown cmd";
+        break;
+    }
+
+    /* 构造响应信封 */
+    led_control_EnvelopeResponse env_resp = led_control_EnvelopeResponse_init_default;
+    env_resp.error = ota_resp.error;
+    env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
+    env_resp.result.ota_result = ota_resp;
+    env_resp.error_msg.arg = err_msg ? (void *)err_msg : (void *)"";
+    env_resp.error_msg.funcs.encode = str_callback;
+
+    uint8_t buf[256];
+    pb_ostream_t stream = pb_ostream_from_buffer(buf, sizeof(buf));
+    led_control_Envelope env = led_control_Envelope_init_default;
+    env.protocol_version = 2;
+    env.which_payload = led_control_Envelope_response_tag;
+    env.payload.response = env_resp;
+
+    if (pb_encode(&stream, led_control_Envelope_fields, &env)) {
+        send_notify(conn_handle, buf, stream.bytes_written);
+        ESP_LOGI(TAG, "OTA 响应: error=%d, %u%%", ota_resp.error, ota_resp.percent);
+    } else {
+        ESP_LOGE(TAG, "编码 Envelope 失败: %s", PB_GET_ERROR(&stream));
+    }
+}
+
+/* ======================== 处理 Custom Data 写入 ======================== */
+
+static void handle_custom_data_write(uint16_t conn_handle, const uint8_t *data, size_t len)
+{
+    pb_istream_t stream = pb_istream_from_buffer(data, len);
+    led_control_Envelope env = led_control_Envelope_init_default;
+
+    if (!pb_decode(&stream, led_control_Envelope_fields, &env)) {
+        ESP_LOGW(TAG, "Envelope 解码失败");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Envelope: ver=%u, req=%u, type=%d",
+             env.protocol_version, env.request_id, env.which_payload);
+
+    if (env.which_payload == led_control_Envelope_ota_tag) {
+        handle_ota_cmd(conn_handle, &env.payload.ota);
+    } else {
+        ESP_LOGW(TAG, "不支持的消息类型: %d", env.which_payload);
+    }
+}
+
+/* ======================== CMD_DATA 分块写入 callback ========================
+ * 这个 callback 在 decode 时由 nanopb 调用, 每次传入一分块数据
+ */
+
+/* ======================== GATT 回调 ======================== */
+
+static int desc_access(uint16_t conn_handle, uint16_t attr_handle,
+                       struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    const char *name = (const char *)arg;
+    return os_mbuf_append(ctxt->om, name, strlen(name))
+           ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
+}
+
+static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
+                           struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    switch (ctxt->op) {
+
+    case BLE_GATT_ACCESS_OP_WRITE_CHR: {
+        uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
+        if (len == 0) return 0;
+
+        if (attr_handle == s_chr_data_handle) {
+            /* Custom Data — 解析 Envelope */
+            uint8_t buf[1024];
+            if (len > sizeof(buf)) len = sizeof(buf);
+            ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
+
+            if (s_ota_in_progress && len < 1024) {
+                /* 走捷径: 直接当作 OTA DATA 块写入 */
+                esp_err_t err = esp_ota_write(s_ota_handle, buf, len);
+                if (err == ESP_OK) {
+                    s_ota_received += len;
+                    ESP_LOGI(TAG, "OTA DATA: +%u, total=%u, %u%%",
+                             len, s_ota_received,
+                             (s_ota_received * 100 / s_ota_total_size));
+                } else {
+                    ESP_LOGE(TAG, "ota_write 失败");
+                }
+            } else {
+                /* 尝试解析为 Envelope */
+                handle_custom_data_write(conn_handle, buf, len);
+            }
+            return 0;
+        }
+
+        /* TX 特征值 — 简单文本 */
+        char tbuf[128];
+        if (len > sizeof(tbuf) - 1) len = sizeof(tbuf) - 1;
+        ble_hs_mbuf_to_flat(ctxt->om, tbuf, len, NULL);
+        tbuf[len] = '\0';
+        ESP_LOGI(TAG, "收到(TX): %s", tbuf);
+        return 0;
+    }
+
+    case BLE_GATT_ACCESS_OP_READ_CHR: {
+        if (attr_handle == s_chr_data_handle) return 0;
+        static const char resp[] = "Hello from ESP32-C3!";
+        return os_mbuf_append(ctxt->om, resp, strlen(resp))
+               ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
+    }
+
+    default:
+        return 0;
+    }
+}
+
+/* ======================== GATT 服务 ======================== */
+
+static const struct ble_gatt_svc_def gatt_svcs[] = {
+    {
+        .type = BLE_GATT_SVC_TYPE_PRIMARY,
+        .uuid = BLE_UUID16_DECLARE(GATT_SVC_UUID),
+        .characteristics = (struct ble_gatt_chr_def[]) {
+            { .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_TX),
+              .access_cb = gatt_svc_access,
+              .flags = BLE_GATT_CHR_F_WRITE,
+              .descriptors = (struct ble_gatt_dsc_def[]) { {
+                  .uuid = BLE_UUID16_DECLARE(0x2901),
+                  .att_flags = BLE_ATT_F_READ,
+                  .access_cb = desc_access,
+                  .arg = (void *)"TX Data",
+              }, { 0 } },
+            }, {
+                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
+                .access_cb = gatt_svc_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                .descriptors = (struct ble_gatt_dsc_def[]) { {
+                    .uuid = BLE_UUID16_DECLARE(0x2901),
+                    .att_flags = BLE_ATT_F_READ,
+                    .access_cb = desc_access,
+                    .arg = (void *)"RX Data",
+                }, { 0 } },
+            }, {
+                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
+                .access_cb = gatt_svc_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .descriptors = (struct ble_gatt_dsc_def[]) { {
+                    .uuid = BLE_UUID16_DECLARE(0x2901),
+                    .att_flags = BLE_ATT_F_READ,
+                    .access_cb = desc_access,
+                    .arg = (void *)"Custom Data",
+                }, { 0 } },
+            }, { 0 },
+        },
+    }, { 0 },
+};
 
 static const char *phy_str(uint8_t phy)
 {
@@ -27,171 +366,6 @@ static const char *phy_str(uint8_t phy)
     }
 }
 
-static const char *role_str(uint8_t role)
-{
-    return role == BLE_GAP_ROLE_MASTER ? "主机" : "从机";
-}
-
-/* 设备名称 */
-#define DEVICE_NAME "ESP32-C3-Blue"
-
-/* 自定义服务 UUID（16-bit） */
-#define GATT_SVC_UUID       0x00FF
-#define GATT_CHR_UUID_TX    0xFF01   /* 手机 -> ESP32（写）*/
-#define GATT_CHR_UUID_RX    0xFF02   /* ESP32 -> 手机（读/通知）*/
-#define GATT_CHR_UUID_DATA  0xFF03   /* 自定义数据（读写, protobuf）*/
-
-/* 特征值句柄 */
-static uint16_t s_chr_rx_handle;    /* RX（通知）*/
-static uint16_t s_chr_data_handle;  /* DATA（自定义数据）*/
-
-/* 自定义数据缓冲区 */
-#define CUSTOM_DATA_MAX 512
-static uint8_t s_custom_data[CUSTOM_DATA_MAX];
-static uint16_t s_custom_data_len;
-
-/* 已连接手机句柄列表 */
-#define MAX_PEERS 3
-static uint16_t s_peers[MAX_PEERS];
-static int s_peer_count;
-
-/* 前向声明 */
-static void adv_start(void);
-
-/* 描述符访问回调 — 返回特征值名称 */
-static int desc_access(uint16_t conn_handle, uint16_t attr_handle,
-                       struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    const char *name = (const char *)arg;
-    return os_mbuf_append(ctxt->om, name, strlen(name))
-           ? BLE_ATT_ERR_INSUFFICIENT_RES : 0;
-}
-
-/* ======================== GATT 访问回调 ======================== */
-
-static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
-                           struct ble_gatt_access_ctxt *ctxt, void *arg)
-{
-    switch (ctxt->op) {
-
-    case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-        uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-
-        if (attr_handle == s_chr_data_handle) {
-            /* 写入自定义数据（protobuf 原始数据） */
-            if (len > CUSTOM_DATA_MAX) len = CUSTOM_DATA_MAX;
-            s_custom_data_len = len;
-            ble_hs_mbuf_to_flat(ctxt->om, s_custom_data, len, NULL);
-            ESP_LOGI(TAG, "收到(Data): %d 字节", len);
-            return 0;
-        }
-
-        /* TX 特征值 — 文本数据 */
-        char buf[128];
-        if (len > sizeof(buf) - 1) len = sizeof(buf) - 1;
-        ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
-        buf[len] = '\0';
-        ESP_LOGI(TAG, "收到(TX): %s", buf);
-        return 0;
-    }
-
-    case BLE_GATT_ACCESS_OP_READ_CHR: {
-        /* 判断是哪个特征值 */
-        if (attr_handle == s_chr_data_handle) {
-            /* 读取自定义数据 */
-            os_mbuf_append(ctxt->om, s_custom_data, s_custom_data_len);
-            return 0;
-        }
-        /* 默认读取 RX */
-        static const char resp[] = "Hello from ESP32-C3!";
-        int rc = os_mbuf_append(ctxt->om, resp, strlen(resp));
-        return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
-    }
-
-    default:
-        break;
-    }
-    return 0;
-}
-
-/* ======================== GATT 服务定义 ======================== */
-
-static const struct ble_gatt_svc_def gatt_svcs[] = {
-    {
-        .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = BLE_UUID16_DECLARE(GATT_SVC_UUID),
-        .characteristics = (struct ble_gatt_chr_def[]) {
-            {
-                /* TX: 手机 -> ESP32（可写） */
-                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_TX),
-                .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_WRITE,
-                .descriptors = (struct ble_gatt_dsc_def[]) { {
-                    .uuid = BLE_UUID16_DECLARE(0x2901),
-                    .att_flags = BLE_ATT_F_READ,
-                    .access_cb = desc_access,
-                    .arg = (void *)"TX Data",
-                }, {
-                    0,
-                } },
-            }, {
-                /* RX: ESP32 -> 手机（可读 + 通知） */
-                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
-                .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
-                .descriptors = (struct ble_gatt_dsc_def[]) { {
-                    .uuid = BLE_UUID16_DECLARE(0x2901),
-                    .att_flags = BLE_ATT_F_READ,
-                    .access_cb = desc_access,
-                    .arg = (void *)"RX Data",
-                }, {
-                    0,
-                } },
-            }, {
-                /* DATA: protobuf 自定义数据（可读写） */
-                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
-                .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
-                .descriptors = (struct ble_gatt_dsc_def[]) { {
-                    .uuid = BLE_UUID16_DECLARE(0x2901),
-                    .att_flags = BLE_ATT_F_READ,
-                    .access_cb = desc_access,
-                    .arg = (void *)"Custom Data",
-                }, {
-                    0,
-                } },
-            }, {
-                0,
-            },
-        },
-    }, {
-        0,
-    },
-};
-
-/* 打印连接参数 */
-static void print_conn_params(uint16_t conn_handle)
-{
-    struct ble_gap_conn_desc desc;
-    int rc = ble_gap_conn_find(conn_handle, &desc);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "获取连接描述符失败 (rc=%d)", rc);
-        return;
-    }
-
-    ESP_LOGI(TAG, "  Role:       %s", role_str(desc.role));
-    ESP_LOGI(TAG, "  连接间隔:   %u x 1.25ms = %.2fms",
-             desc.conn_itvl, desc.conn_itvl * 1.25f);
-    ESP_LOGI(TAG, "  连接延迟:   %u", desc.conn_latency);
-    ESP_LOGI(TAG, "  超时时间:   %u x 10ms = %ums",
-             desc.supervision_timeout, desc.supervision_timeout * 10);
-    ESP_LOGI(TAG, "  MTU:        %u bytes", ble_att_mtu(conn_handle));
-    ESP_LOGI(TAG, "  对端地址:   %02x:%02x:%02x:%02x:%02x:%02x",
-             desc.peer_ota_addr.val[5], desc.peer_ota_addr.val[4],
-             desc.peer_ota_addr.val[3], desc.peer_ota_addr.val[2],
-             desc.peer_ota_addr.val[1], desc.peer_ota_addr.val[0]);
-}
-
 /* ======================== GAP 事件 ======================== */
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg)
@@ -200,42 +374,42 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status == 0) {
-            uint16_t handle = event->connect.conn_handle;
-            ESP_LOGI(TAG, "=== 手机已连接 (conn_handle=%d) ===", handle);
-            print_conn_params(handle);
-            if (s_peer_count < MAX_PEERS) {
-                s_peers[s_peer_count++] = handle;
-            }
+            uint16_t h = event->connect.conn_handle;
+            struct ble_gap_conn_desc d;
+            ESP_LOGI(TAG, "=== 已连接 (conn=%d) ===", h);
+            if (ble_gap_conn_find(h, &d) == 0)
+                ESP_LOGI(TAG, "  间隔: %u x 1.25ms, MTU: %u",
+                         d.conn_itvl, ble_att_mtu(h));
+            if (s_peer_count < MAX_PEERS) s_peers[s_peer_count++] = h;
             adv_start();
         }
         return 0;
 
     case BLE_GAP_EVENT_DISCONNECT: {
-        uint16_t handle = event->disconnect.conn.conn_handle;
-        ESP_LOGI(TAG, "手机已断开 (conn=%d, reason=%d)", handle, event->disconnect.reason);
-        for (int i = 0; i < s_peer_count; i++) {
-            if (s_peers[i] == handle) {
-                s_peers[i] = s_peers[--s_peer_count];
-                break;
-            }
+        uint16_t h = event->disconnect.conn.conn_handle;
+        ESP_LOGI(TAG, "已断开 (conn=%d, reason=%d)", h, event->disconnect.reason);
+        for (int i = 0; i < s_peer_count; i++)
+            if (s_peers[i] == h) { s_peers[i] = s_peers[--s_peer_count]; break; }
+        if (s_ota_in_progress) {
+            esp_ota_abort(s_ota_handle);
+            s_ota_in_progress = false;
+            ESP_LOGI(TAG, "OTA 终止 (断开)");
         }
         return 0;
     }
 
     case BLE_GAP_EVENT_MTU:
-        ESP_LOGI(TAG, "MTU 更新: conn=%d, mtu=%u",
-                 event->mtu.conn_handle, event->mtu.value);
+        ESP_LOGI(TAG, "MTU: conn=%d, mtu=%u", event->mtu.conn_handle, event->mtu.value);
         return 0;
 
     case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
-        ESP_LOGI(TAG, "PHY 更新: conn=%d, TX=%s, RX=%s",
+        ESP_LOGI(TAG, "PHY: conn=%d, TX=%s, RX=%s",
                  event->phy_updated.conn_handle,
                  phy_str(event->phy_updated.tx_phy),
                  phy_str(event->phy_updated.rx_phy));
         return 0;
 
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        ESP_LOGI(TAG, "广播完成，状态：%d", event->adv_complete.reason);
         adv_start();
         return 0;
 
@@ -251,7 +425,6 @@ static void adv_start(void)
     struct ble_gap_adv_params adv_params;
     struct ble_hs_adv_fields fields;
     int rc;
-
     const char *name = ble_svc_gap_device_name();
 
     memset(&fields, 0, sizeof(fields));
@@ -266,10 +439,7 @@ static void adv_start(void)
     fields.uuids16_is_complete = 1;
 
     rc = ble_gap_adv_set_fields(&fields);
-    if (rc != 0) {
-        ESP_LOGE(TAG, "设置广播包失败 (rc=%d)", rc);
-        return;
-    }
+    if (rc != 0) { ESP_LOGE(TAG, "adv_set_fields fail (rc=%d)", rc); return; }
 
     memset(&adv_params, 0, sizeof(adv_params));
     adv_params.conn_mode = BLE_GAP_CONN_MODE_UND;
@@ -279,40 +449,23 @@ static void adv_start(void)
                            &adv_params, ble_gap_event, NULL);
     if (rc == 0) {
         ESP_LOGI(TAG, "广播中: %s", name);
-    } else if (rc == BLE_HS_EALREADY) {
-    } else {
-        ESP_LOGE(TAG, "启动广播失败 (rc=%d)", rc);
+    } else if (rc != BLE_HS_EALREADY) {
+        ESP_LOGE(TAG, "adv_start fail (rc=%d)", rc);
     }
 }
 
-/* ======================== NimBLE 同步回调 ======================== */
+/* ======================== NimBLE 初始化 ======================== */
 
 static void ble_host_sync(void)
 {
-    int rc;
-
-    rc = ble_gatts_find_chr(
-        BLE_UUID16_DECLARE(GATT_SVC_UUID),
-        BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
-        NULL, &s_chr_rx_handle);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "未找到 RX 句柄 (rc=%d)", rc);
-    }
-
-    rc = ble_gatts_find_chr(
-        BLE_UUID16_DECLARE(GATT_SVC_UUID),
-        BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
-        NULL, &s_chr_data_handle);
-    if (rc != 0) {
-        ESP_LOGW(TAG, "未找到 DATA 句柄 (rc=%d)", rc);
-    } else {
-        ESP_LOGI(TAG, "DATA 句柄: %d", s_chr_data_handle);
-    }
-
+    ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
+                       BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
+                       NULL, &s_chr_rx_handle);
+    ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
+                       BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
+                       NULL, &s_chr_data_handle);
     adv_start();
 }
-
-/* ======================== NimBLE 主机任务 ======================== */
 
 static void ble_host_task(void *param)
 {
@@ -320,20 +473,13 @@ static void ble_host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
-/* ======================== 初始化 ======================== */
-
 static void ble_app_init(void)
 {
     ble_svc_gap_device_name_set(DEVICE_NAME);
     nimble_port_init();
-
     ble_hs_cfg.sync_cb = ble_host_sync;
-
-    int rc = ble_gatts_count_cfg(gatt_svcs);
-    if (rc != 0) { ESP_LOGE(TAG, "GATT 计数失败 (rc=%d)", rc); return; }
-    rc = ble_gatts_add_svcs(gatt_svcs);
-    if (rc != 0) { ESP_LOGE(TAG, "GATT 注册失败 (rc=%d)", rc); return; }
-
+    ble_gatts_count_cfg(gatt_svcs);
+    ble_gatts_add_svcs(gatt_svcs);
     nimble_port_freertos_init(ble_host_task);
 }
 
@@ -349,10 +495,11 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     ESP_LOGI(TAG, "====================================");
-    ESP_LOGI(TAG, "  ESP32-C3 NimBLE");
-    ESP_LOGI(TAG, "  TX  (0xFF01): 文本写入");
-    ESP_LOGI(TAG, "  RX  (0xFF02): 读/通知");
-    ESP_LOGI(TAG, "  Data(0xFF03): 读写 protobuf 数据");
+    ESP_LOGI(TAG, "  ESP32-C3 NimBLE + OTA");
+    ESP_LOGI(TAG, "  FW: %s", esp_app_get_description()->version);
+    ESP_LOGI(TAG, "  TX(0xFF01)   : 文本写入");
+    ESP_LOGI(TAG, "  RX(0xFF02)   : 读/通知");
+    ESP_LOGI(TAG, "  Data(0xFF03) : Envelope protobuf");
     ESP_LOGI(TAG, "====================================");
 
     ble_app_init();
