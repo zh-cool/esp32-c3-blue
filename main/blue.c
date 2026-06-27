@@ -16,11 +16,6 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
-/* Protobuf */
-#include "pb_decode.h"
-#include "pb_encode.h"
-#include "led_control.pb.h"
-
 /* 业务模块 */
 #include "ota.h"
 
@@ -45,28 +40,6 @@ static int s_peer_count;
 /* 前向声明 */
 static void adv_start(void);
 
-/* ======================== 处理 Custom Data 写入 ======================== */
-
-static void handle_custom_data(uint16_t conn_handle, const uint8_t *buf, size_t len)
-{
-    pb_istream_t stream = pb_istream_from_buffer(buf, len);
-    led_control_Envelope env = led_control_Envelope_init_default;
-
-    if (!pb_decode(&stream, led_control_Envelope_fields, &env)) {
-        ESP_LOGW(TAG, "Envelope 解码失败");
-        return;
-    }
-
-    ESP_LOGI(TAG, "Envelope: ver=%u, req=%u, type=%d",
-             env.protocol_version, env.request_id, env.which_payload);
-
-    if (env.which_payload == led_control_Envelope_ota_tag) {
-        ota_handle_cmd(conn_handle, &env.payload.ota);
-    } else {
-        ESP_LOGW(TAG, "不支持的消息类型: %d", env.which_payload);
-    }
-}
-
 /* ======================== GATT 回调 ======================== */
 
 static int desc_access(uint16_t conn_handle, uint16_t attr_handle,
@@ -90,14 +63,8 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
             uint8_t buf[1024];
             if (len > sizeof(buf)) len = sizeof(buf);
             ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
-
-            /* OTA 进行中 → 裸数据块写入 flash */
-            if (ota_is_in_progress()) {
-                ota_handle_data(conn_handle, buf, len);
-            } else {
-                /* 解析 Envelope */
-                handle_custom_data(conn_handle, buf, len);
-            }
+            ESP_LOGI(TAG, "收到 Data: %u 字节", len);
+            ota_handle_envelope(conn_handle, buf, len);
             return 0;
         }
 
