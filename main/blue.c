@@ -17,6 +17,7 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 /* 业务模块 */
+#include "envelope.h"
 #include "ota.h"
 
 static const char *TAG = "BLUE";
@@ -63,8 +64,7 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
             uint8_t buf[1024];
             if (len > sizeof(buf)) len = sizeof(buf);
             ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
-            ESP_LOGI(TAG, "收到 Data: %u 字节", len);
-            ota_handle_envelope(conn_handle, buf, len);
+            envelope_handle(conn_handle, buf, len);
             return 0;
         }
 
@@ -221,7 +221,7 @@ static void ble_host_sync(void)
     if (s_data_handle == 0) {
         ESP_LOGW(TAG, "未找到 DATA 句柄");
     } else {
-        ota_set_data_handle(s_data_handle);
+        envelope_set_data_handle(s_data_handle);
     }
     adv_start();
 }
