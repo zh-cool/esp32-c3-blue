@@ -39,9 +39,16 @@ static const char *role_str(uint8_t role)
 #define GATT_SVC_UUID       0x00FF
 #define GATT_CHR_UUID_TX    0xFF01   /* 手机 -> ESP32（写）*/
 #define GATT_CHR_UUID_RX    0xFF02   /* ESP32 -> 手机（读/通知）*/
+#define GATT_CHR_UUID_DATA  0xFF03   /* 自定义数据（读写, protobuf）*/
 
-/* RX 特征值句柄（用于发送通知） */
-static uint16_t s_chr_rx_handle;
+/* 特征值句柄 */
+static uint16_t s_chr_rx_handle;    /* RX（通知）*/
+static uint16_t s_chr_data_handle;  /* DATA（自定义数据）*/
+
+/* 自定义数据缓冲区 */
+#define CUSTOM_DATA_MAX 512
+static uint8_t s_custom_data[CUSTOM_DATA_MAX];
+static uint16_t s_custom_data_len;
 
 /* 已连接手机句柄列表 */
 #define MAX_PEERS 3
@@ -68,19 +75,34 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
     switch (ctxt->op) {
 
     case BLE_GATT_ACCESS_OP_WRITE_CHR: {
-        /* 手机写入数据到 TX 特征值 */
-        char buf[128];
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
-        if (len > sizeof(buf) - 1)
-            len = sizeof(buf) - 1;
+
+        if (attr_handle == s_chr_data_handle) {
+            /* 写入自定义数据（protobuf 原始数据） */
+            if (len > CUSTOM_DATA_MAX) len = CUSTOM_DATA_MAX;
+            s_custom_data_len = len;
+            ble_hs_mbuf_to_flat(ctxt->om, s_custom_data, len, NULL);
+            ESP_LOGI(TAG, "收到(Data): %d 字节", len);
+            return 0;
+        }
+
+        /* TX 特征值 — 文本数据 */
+        char buf[128];
+        if (len > sizeof(buf) - 1) len = sizeof(buf) - 1;
         ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
         buf[len] = '\0';
-
-        ESP_LOGI(TAG, "收到: %s", buf);
+        ESP_LOGI(TAG, "收到(TX): %s", buf);
         return 0;
     }
 
     case BLE_GATT_ACCESS_OP_READ_CHR: {
+        /* 判断是哪个特征值 */
+        if (attr_handle == s_chr_data_handle) {
+            /* 读取自定义数据 */
+            os_mbuf_append(ctxt->om, s_custom_data, s_custom_data_len);
+            return 0;
+        }
+        /* 默认读取 RX */
         static const char resp[] = "Hello from ESP32-C3!";
         int rc = os_mbuf_append(ctxt->om, resp, strlen(resp));
         return rc == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
@@ -122,6 +144,19 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                     .att_flags = BLE_ATT_F_READ,
                     .access_cb = desc_access,
                     .arg = (void *)"RX Data",
+                }, {
+                    0,
+                } },
+            }, {
+                /* DATA: protobuf 自定义数据（可读写） */
+                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
+                .access_cb = gatt_svc_access,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .descriptors = (struct ble_gatt_dsc_def[]) { {
+                    .uuid = BLE_UUID16_DECLARE(0x2901),
+                    .att_flags = BLE_ATT_F_READ,
+                    .access_cb = desc_access,
+                    .arg = (void *)"Custom Data",
                 }, {
                     0,
                 } },
@@ -254,13 +289,26 @@ static void adv_start(void)
 
 static void ble_host_sync(void)
 {
-    int rc = ble_gatts_find_chr(
+    int rc;
+
+    rc = ble_gatts_find_chr(
         BLE_UUID16_DECLARE(GATT_SVC_UUID),
         BLE_UUID16_DECLARE(GATT_CHR_UUID_RX),
         NULL, &s_chr_rx_handle);
     if (rc != 0) {
         ESP_LOGW(TAG, "未找到 RX 句柄 (rc=%d)", rc);
     }
+
+    rc = ble_gatts_find_chr(
+        BLE_UUID16_DECLARE(GATT_SVC_UUID),
+        BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
+        NULL, &s_chr_data_handle);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "未找到 DATA 句柄 (rc=%d)", rc);
+    } else {
+        ESP_LOGI(TAG, "DATA 句柄: %d", s_chr_data_handle);
+    }
+
     adv_start();
 }
 
@@ -300,11 +348,12 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    ESP_LOGI(TAG, "=================================");
-    ESP_LOGI(TAG, "  ESP32-C3 NimBLE 已启动");
-    ESP_LOGI(TAG, "  TX(0xFF01): 手机写数据");
-    ESP_LOGI(TAG, "  RX(0xFF02): 手机读/订阅通知");
-    ESP_LOGI(TAG, "=================================");
+    ESP_LOGI(TAG, "====================================");
+    ESP_LOGI(TAG, "  ESP32-C3 NimBLE");
+    ESP_LOGI(TAG, "  TX  (0xFF01): 文本写入");
+    ESP_LOGI(TAG, "  RX  (0xFF02): 读/通知");
+    ESP_LOGI(TAG, "  Data(0xFF03): 读写 protobuf 数据");
+    ESP_LOGI(TAG, "====================================");
 
     ble_app_init();
 }
