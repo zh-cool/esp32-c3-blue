@@ -45,6 +45,11 @@ static void store_resp(uint32_t request_id, led_control_ErrorCode error,
     if (ota_r) {
         env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
         env_resp.result.ota_result = *ota_r;
+        /* OTAResponse.error_msg 是 CALLBACK, 必须设置, 否则编码异常 */
+        if (env_resp.result.ota_result.error_msg.funcs.encode == NULL) {
+            env_resp.result.ota_result.error_msg.funcs.encode = str_cb;
+            env_resp.result.ota_result.error_msg.arg = (void *)"";
+        }
     }
 
     led_control_Envelope env = led_control_Envelope_init_default;

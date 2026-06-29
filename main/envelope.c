@@ -49,7 +49,13 @@ static void store_response(uint32_t request_id, led_control_ErrorCode error,
         return;
     }
 
-    /* 自定义响应 */
+    /* 自定义响应 — 确保所有 CALLBACK 字段都有编码器 */
+    if (resp->error_msg.funcs.encode == NULL) {
+        /* 为深拷贝的 error_msg 设置空字符串编码 */
+        ((led_control_EnvelopeResponse *)resp)->error_msg.funcs.encode = str_cb;
+        ((led_control_EnvelopeResponse *)resp)->error_msg.arg = (void *)"";
+    }
+
     led_control_Envelope env = led_control_Envelope_init_default;
     env.protocol_version = 2;
     env.request_id = request_id;
