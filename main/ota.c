@@ -173,9 +173,9 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         resp.percent = 100; resp.done = true;
         resp.error_msg.arg = (void *)"OK, restarting...";
         store_resp(req_id, &resp);
-        ESP_LOGI(TAG, "COMPLETE %u bytes", s_ota_received);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        esp_restart();
+        ESP_LOGI(TAG, "COMPLETE %u bytes, restart in 3s", s_ota_received);
+        /* 独立任务延时重启, 不阻塞 NimBLE */
+        xTaskCreate(delayed_restart, "ota_rb", 2048, NULL, 5, NULL);
         return;
     }
 
@@ -207,6 +207,15 @@ void ota_on_disconnect(void)
         s_active = false;
         ESP_LOGI(TAG, "abort (disconnect)");
     }
+}
+
+/* 延时重启任务 — 给手机留时间读取响应 */
+static void delayed_restart(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    ESP_LOGI(TAG, "restarting now");
+    esp_restart();
 }
 
 void ota_init(void)
