@@ -21,6 +21,7 @@ static esp_ota_handle_t s_ota_handle;
 static const esp_partition_t *s_ota_partition;
 static uint32_t s_ota_total;
 static uint32_t s_ota_received;
+static uint32_t s_last_log_pct;
 
 /* ======================== 字符串编码 callback ======================== */
 
@@ -127,9 +128,6 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
             return;
         }
 
-        ESP_LOGI(TAG, "DATA: offset=%u, %zu bytes",
-                 req->params.data_params.offset, chunk_len);
-
         esp_err_t err = esp_ota_write(s_ota_handle, chunk_data, chunk_len);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "ota_write fail (err=%d)", err);
@@ -138,6 +136,13 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
             return;
         }
         s_ota_received += chunk_len;
+
+        /* 每 10% 打印一次进度 */
+        uint32_t new_pct = (s_ota_total > 0) ? (s_ota_received * 100 / s_ota_total) : 0;
+        if (new_pct - (new_pct % 10) > s_last_log_pct) {
+            s_last_log_pct = new_pct - (new_pct % 10);
+            ESP_LOGI(TAG, "progress: %u%% (%u/%u)", s_last_log_pct, s_ota_received, s_ota_total);
+        }
 
         led_control_OTAResponse r;
         memset(&r, 0, sizeof(r));
@@ -161,6 +166,7 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         if (req->which_params != led_control_OTARequest_start_params_tag) { err = "no params"; break; }
         s_ota_total = req->params.start_params.total_size;
         s_ota_received = 0;
+        s_last_log_pct = 0;
         ESP_LOGI(TAG, "START total=%u", s_ota_total);
         s_ota_partition = esp_ota_get_next_update_partition(NULL);
         if (!s_ota_partition) { err = "no partition"; break; }
@@ -223,4 +229,5 @@ void ota_init(void)
     s_active = false;
     s_ota_total = 0;
     s_ota_received = 0;
+    s_last_log_pct = 0;
 }
