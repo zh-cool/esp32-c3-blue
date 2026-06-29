@@ -66,27 +66,68 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
         ESP_LOGE(TAG, "encode fail: %s", PB_GET_ERROR(&s));
 }
 
-/* ====== 从原始 protobuf 数据中提取 chunk bytes ====== */
+/* 从 p 开始读 protobuf varint, 返回 (值, 新位置) */
+static size_t read_varint(const uint8_t *d, size_t len, size_t p, uint32_t *val)
+{
+    *val = 0; int shift = 0;
+    while (p < len) {
+        *val |= (uint32_t)(d[p] & 0x7F) << shift;
+        if (!(d[p++] & 0x80)) break;
+        shift += 7;
+    }
+    return p;
+}
 
+/* 顺序扫描下一字节, 只要 != target 就前进 */
+static size_t scan_to(const uint8_t *d, size_t len, size_t p, uint8_t target)
+{
+    while (p < len && d[p] != target) p++;
+    return p;
+}
+
+/* ====== 从原始 protobuf 可靠解析 chunk bytes ======
+ * 顺序扫描: 0x92(ota) → 0x5a(data_params) → 0x12(chunk)
+ * 每次进入下一层后, 只在本层范围内查找, 避免固件数据中的假匹配
+ */
 static bool extract_chunk(const uint8_t *data, size_t len,
                           const uint8_t **out, size_t *out_len)
 {
-    for (size_t i = 0; i + 2 < len; i++) {
-        if (data[i] == 0x12) {
-            size_t pos = i + 1;
-            *out_len = 0; int shift = 0;
-            while (pos < len) {
-                *out_len |= (size_t)(data[pos] & 0x7F) << shift;
-                if (!(data[pos++] & 0x80)) break;
-                shift += 7;
-            }
-            if (pos + *out_len <= len) {
-                *out = data + pos;
-                return true;
-            }
-        }
-    }
-    return false;
+    size_t p = 0;
+    uint32_t val;
+
+    /* --- 先跳过 Envelope 头部 --- */
+    /* protocol_version (field 1, varint): 08 [varint] */
+    if (p >= len || data[p++] != 0x08) return false;
+    p = read_varint(data, len, p, &val);
+    /* request_id (field 2, varint): 10 [varint] */
+    if (p >= len || data[p++] != 0x10) return false;
+    p = read_varint(data, len, p, &val);
+    /* 现在在 payload oneof, 找 ota 字段 (field 50, tag=0x92 vari...) */
+    p = scan_to(data, len, p, 0x92);
+    if (p >= len) return false;
+    p++;                                 /* skip 0x92 */
+    p = read_varint(data, len, p, &val); /* skip tag continuation + length */
+    /* 现在 p 指向 OTARequest 内容的开头, 找 data_params (field 11, tag=0x5a) */
+    p = scan_to(data, len, p, 0x5a);
+    if (p >= len) return false;
+    p++;                                 /* skip 0x5a */
+    p = read_varint(data, len, p, &val); /* skip tag continuation + length */
+    /* 现在 p 指向 OTADataParams 内容的开头 */
+    /* 先跳过 offset (field 1, tag=0x08, 但可能含有 0x12 字节) */
+    /* 唯一可靠的: 逐字节前进, 直到 0x12 且确定是 chunk tag 而非 offset 值内的字节 */
+    /* offset 是 varint, 在 offset 的 varint 结束后至少有一个 tag 字节 */
+    /* 先跳过 tag 0x08 */
+    if (p < len && data[p] == 0x08) p++;
+    else return false;
+    p = read_varint(data, len, p, &val); /* skip offset value */
+    /* 现在应该指向 chunk tag 0x12 */
+    if (p >= len || data[p] != 0x12) return false;
+    p++;                                 /* skip 0x12 */
+    p = read_varint(data, len, p, &val); /* read chunk length */
+    *out_len = val;
+    if (p + *out_len > len) return false;
+    *out = data + p;
+    return true;
 }
 
 /* 延时重启任务 — 给手机留时间读取响应 */
