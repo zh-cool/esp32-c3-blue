@@ -157,7 +157,7 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
     }
 
     /* START / COMPLETE / ABORT */
-    resp = led_control_OTAResponse_init_zero;
+    memset(&resp, 0, sizeof(resp));
     err = NULL;
 
     switch (req->cmd) {
