@@ -99,32 +99,32 @@ static bool extract_chunk(const uint8_t *data, size_t len,
     p = read_varint(data, len, p, &v);
     p = read_varint(data, len, p, &v);
 
-    /* --- data_params 内部: offset(08) chunk(12) 任意顺序 --- */
-    /* 先找到 data_params 的开头 */
-    while (p < len && data[p] != 0x5a) p++;
-    if (p >= len) { *dbg = 4; return false; }
+    /* --- OTARequest 内部: 跳过 cmd 字段, 再找 data_params --- */
+    /* 显式跳过 cmd (tag 08 + value varint) 避免 scan_to 误匹长度中的 0x5a */
+    if (p >= len || data[p] != 0x08) { *dbg = 4; return false; }
+    p++;
+    p = read_varint(data, len, p, &v);  /* skip cmd value */
+    /* 现在是 data_params 字段 (tag 0x5a) */
+    if (p >= len || data[p] != 0x5a) { *dbg = 5; return false; }
     p++;
     p = read_varint(data, len, p, &v);  /* skip dp length */
-    /* 现在在 data_params 内容中, 处理两个字段 */
+    /* data_params: 可能有 chunk(12) 和/或 offset(08), 任意顺序, offset=0 时省略 */
+    *out = NULL;
     for (int i = 0; i < 2; i++) {
-        if (p >= len) { *dbg = 5; return false; }
+        if (p >= len) break;
         if (data[p] == 0x12) {
-            /* chunk field */
             p++;
             p = read_varint(data, len, p, &v);
             *out_len = v;
             *out = data + p;
             p += *out_len;
         } else if (data[p] == 0x08) {
-            /* offset field */
             p++;
             p = read_varint(data, len, p, &v);
-        } else {
-            *dbg = 6;
-            return false;
-        }
+        } else break;
     }
-    return *out != NULL;
+    if (!*out) { *dbg = 7; return false; }
+    return true;
 }
 
 /* 延时重启任务 */
