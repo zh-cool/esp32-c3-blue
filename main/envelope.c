@@ -120,7 +120,7 @@ void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
         return;
     }
 
-    ESP_LOGI(TAG, "type=%d, req=%u", env.which_payload, env.request_id);
+    ESP_LOGD(TAG, "type=%d, req=%u", env.which_payload, env.request_id);
 
     switch (env.which_payload) {
 
