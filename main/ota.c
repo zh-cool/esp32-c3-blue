@@ -25,13 +25,6 @@ static uint32_t s_last_log_pct;
 
 /* ======================== 字符串编码 callback ======================== */
 
-static bool msg_cb(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
-{
-    const char *s = *arg ? (const char *)(*arg) : "";
-    if (*s == '\0') return true;
-    return pb_encode_string(stream, (uint8_t *)s, strlen(s));
-}
-
 /* ======================== 构造并存入响应缓冲区 ======================== */
 
 static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r)
@@ -42,15 +35,12 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
 
     if (ota_r && ota_r->error != led_control_ErrorCode_OK) {
         env_resp.error = ota_r->error;
-        env_resp.error_msg.funcs.encode = msg_cb;
+        strncpy(env_resp.error_msg, ota_r->error_msg, sizeof(env_resp.error_msg) - 1);
     }
 
     if (ota_r) {
         env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
         env_resp.result.ota_result = *ota_r;
-        if (ota_r->error_msg.arg && *(const char *)(ota_r->error_msg.arg)) {
-            env_resp.result.ota_result.error_msg.funcs.encode = msg_cb;
-        }
     }
 
     led_control_Envelope env = led_control_Envelope_init_zero;
@@ -64,57 +54,6 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
         envelope_resp_len = s.bytes_written;
     else
         ESP_LOGE(TAG, "encode fail: %s", PB_GET_ERROR(&s));
-}
-
-/* 读 varint, 返回新位置 */
-static size_t read_varint(const uint8_t *d, size_t len, size_t p, uint32_t *val)
-{
-    *val = 0; int shift = 0;
-    while (p < len) {
-        *val |= (uint32_t)(d[p] & 0x7F) << shift;
-        if (!(d[p++] & 0x80)) break;
-        shift += 7;
-    }
-    return p;
-}
-
-/* ====== 提取 chunk bytes ======
- * protobuf 字段无序, 在 data_params 内同时处理 offset(08) 和 chunk(12) 任意顺序
- */
-static bool extract_chunk(const uint8_t *data, size_t len,
-                          const uint8_t **out, size_t *out_len)
-{
-    size_t p = 0; uint32_t v;
-
-    if (p >= len || data[p++] != 0x08) return false;
-    p = read_varint(data, len, p, &v);
-    if (p >= len || data[p++] != 0x10) return false;
-    p = read_varint(data, len, p, &v);
-
-    while (p < len && data[p] != 0x92) p++;
-    if (p >= len) return false;
-    p++;
-    p = read_varint(data, len, p, &v);
-    p = read_varint(data, len, p, &v);
-
-    if (p >= len || data[p] != 0x08) return false;
-    p++;
-    p = read_varint(data, len, p, &v);
-    if (p >= len || data[p] != 0x5a) return false;
-    p++;
-    p = read_varint(data, len, p, &v);
-
-    *out = NULL;
-    for (int i = 0; i < 2; i++) {
-        if (p >= len) break;
-        if (data[p] == 0x12) {
-            p++; p = read_varint(data, len, p, &v);
-            *out_len = v; *out = data + p; p += *out_len;
-        } else if (data[p] == 0x08) {
-            p++; p = read_varint(data, len, p, &v);
-        } else break;
-    }
-    return *out != NULL;
 }
 
 /* 延时重启任务 */
@@ -149,12 +88,8 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
             return;
         }
 
-        const uint8_t *chunk_data;
-        size_t chunk_len;
-        if (!extract_chunk(data, len, &chunk_data, &chunk_len)) {
-            ESP_LOGW(TAG, "DATA: extract chunk failed");
-            return;
-        }
+        uint8_t *chunk_data = req->params.data_params.chunk.bytes;
+        size_t chunk_len = req->params.data_params.chunk.size;
 
         esp_err_t err = esp_ota_write(s_ota_handle, chunk_data, chunk_len);
         if (err != ESP_OK) {
@@ -214,7 +149,7 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         resp.received_bytes = s_ota_received;
         resp.total_bytes = s_ota_total;
         resp.percent = 100; resp.done = true;
-        resp.error_msg.arg = (void *)"OK, restarting...";
+        strncpy(resp.error_msg, "OK, restarting...", sizeof(resp.error_msg) - 1);
         store_resp(req_id, &resp);
         ESP_LOGI(TAG, "COMPLETE %u bytes, restart in 3s", s_ota_received);
         xTaskCreate(delayed_restart, "ota_rb", 2048, NULL, 5, NULL);
@@ -237,7 +172,7 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
     resp.percent = (s_ota_total > 0) ? (s_ota_received * 100 / s_ota_total) : 0;
     if (err) {
         resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
-        resp.error_msg.arg = (void *)err;
+        strncpy(resp.error_msg, err ? err : "", sizeof(resp.error_msg) - 1);
     }
     store_resp(req_id, &resp);
 }

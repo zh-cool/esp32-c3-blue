@@ -3,9 +3,8 @@
 # 格式: message.field_name option_type:option_value
 
 # ==================== 信封层消息配置 ====================
-led_control.Envelope max_size:1024
-led_control.EnvelopeResponse max_size:256
-led_control.EnvelopeResponse.error_msg max_length:128
+led_control.Envelope max_size:2048
+led_control.EnvelopeResponse max_size:1024
 
 # ==================== 设备信息相关 ====================
 led_control.DeviceInfo max_size:512
@@ -37,7 +36,7 @@ led_control.ListScenesResponse.scenes max_count:32
 # ==================== OTA 相关 ====================
 led_control.OTAStartParams max_size:32
 led_control.OTADataParams max_size:1024
-led_control.OTADataParams.chunk max_size:1000
+led_control.OTADataParams.chunk max_size:512
 led_control.OTAResponse max_size:128
 led_control.OTAResponse.error_msg max_length:64
 led_control.OTARequest max_size:1024
