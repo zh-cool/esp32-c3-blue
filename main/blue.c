@@ -34,10 +34,6 @@ static const char *TAG = "BLUE";
 
 static uint16_t s_data_handle;  /* Custom Data 句柄 */
 
-#define MAX_PEERS 3
-static uint16_t s_peers[MAX_PEERS];
-static int s_peer_count;
-
 /* 前向声明 */
 static void adv_start(void);
 
@@ -108,7 +104,7 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
             }, {
                 .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
                 .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
                 .descriptors = (struct ble_gatt_dsc_def[]) { {
                     .uuid = BLE_UUID16_DECLARE(0x2901),
                     .att_flags = BLE_ATT_F_READ,
@@ -144,7 +140,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             if (ble_gap_conn_find(h, &d) == 0)
                 ESP_LOGI(TAG, "  间隔: %u x 1.25ms, MTU: %u",
                          d.conn_itvl, ble_att_mtu(h));
-            if (s_peer_count < MAX_PEERS) s_peers[s_peer_count++] = h;
+            envelope_add_peer(h);
             adv_start();
         }
         return 0;
@@ -152,8 +148,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT: {
         uint16_t h = event->disconnect.conn.conn_handle;
         ESP_LOGI(TAG, "已断开 (conn=%d, reason=%d)", h, event->disconnect.reason);
-        for (int i = 0; i < s_peer_count; i++)
-            if (s_peers[i] == h) { s_peers[i] = s_peers[--s_peer_count]; break; }
+        envelope_remove_peer(h);
         ota_on_disconnect();
         return 0;
     }
@@ -223,6 +218,8 @@ static void ble_host_sync(void)
                        NULL, &s_data_handle);
     if (s_data_handle == 0)
         ESP_LOGW(TAG, "未找到 DATA 句柄");
+    else
+        envelope_set_data_handle(s_data_handle);
     adv_start();
 }
 

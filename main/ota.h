@@ -15,7 +15,7 @@ void ota_init(void);
  * @param req_id 请求 ID（原样返回响应）
  * @note  响应写入 envelope_resp_buf，由对端读取
  */
-void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id);
+void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id, uint16_t conn_handle);
 
 /**
  * @brief 断开连接时中止 OTA

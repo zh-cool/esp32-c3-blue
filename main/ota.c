@@ -50,9 +50,10 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
     env.payload.response = env_resp;
 
     pb_ostream_t s = pb_ostream_from_buffer(envelope_resp_buf, sizeof(envelope_resp_buf));
-    if (pb_encode(&s, led_control_Envelope_fields, &env))
+    if (pb_encode(&s, led_control_Envelope_fields, &env)) {
         envelope_resp_len = s.bytes_written;
-    else
+        envelope_notify_all();
+    } else
         ESP_LOGE(TAG, "encode fail: %s", PB_GET_ERROR(&s));
 }
 
@@ -67,8 +68,9 @@ static void delayed_restart(void *arg)
 
 /* ======================== 处理 OTA 命令 ======================== */
 
-void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id)
+void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id, uint16_t conn_handle)
 {
+    (void)conn_handle;
     /* ================== CMD_DATA ================== */
     if (req->cmd == led_control_OTARequest_Cmd_CMD_DATA) {
         if (!s_active || req->which_params != led_control_OTARequest_data_params_tag) {

@@ -1,6 +1,10 @@
 #include <string.h>
 #include "esp_log.h"
 
+/* NimBLE */
+#include "host/ble_hs.h"
+#include "host/ble_gatt.h"
+
 /* Protobuf */
 #include "pb_encode.h"
 #include "pb_decode.h"
@@ -15,7 +19,54 @@ static const char *TAG = "ENV";
 uint8_t envelope_resp_buf[1024];
 uint16_t envelope_resp_len;
 
-/* ======================== 存入响应缓冲区 ======================== */
+/* 已连接手机 */
+#define MAX_PEERS 3
+static uint16_t s_peers[MAX_PEERS];
+static int s_peer_count;
+
+/* Custom Data 特征值句柄（用于通知） */
+static uint16_t s_data_handle;
+
+/* ======================== Peer 管理 ======================== */
+
+void envelope_add_peer(uint16_t conn_handle)
+{
+    for (int i = 0; i < s_peer_count; i++)
+        if (s_peers[i] == conn_handle) return;
+    if (s_peer_count < MAX_PEERS)
+        s_peers[s_peer_count++] = conn_handle;
+}
+
+void envelope_remove_peer(uint16_t conn_handle)
+{
+    for (int i = 0; i < s_peer_count; i++) {
+        if (s_peers[i] == conn_handle) {
+            s_peers[i] = s_peers[--s_peer_count];
+            return;
+        }
+    }
+}
+
+/* ======================== 通知推送 ======================== */
+
+void envelope_notify_all(void)
+{
+    if (!envelope_resp_len || !s_data_handle || s_peer_count == 0) return;
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(envelope_resp_buf, envelope_resp_len);
+    if (!om) return;
+
+    for (int i = 0; i < s_peer_count; i++) {
+        /* 每个 peer 需要独立的 mbuf */
+        struct os_mbuf *m = (i == 0) ? om : ble_hs_mbuf_from_flat(envelope_resp_buf, envelope_resp_len);
+        if (m) {
+            int rc = ble_gatts_notify_custom(s_peers[i], s_data_handle, m);
+            if (rc) os_mbuf_free_chain(m);
+        }
+    }
+}
+
+/* ======================== 存入响应缓冲区 + 通知 ======================== */
 
 static void store_resp(uint32_t request_id, led_control_ErrorCode error,
                        const char *msg, led_control_EnvelopeResponse *resp)
@@ -27,7 +78,6 @@ static void store_resp(uint32_t request_id, led_control_ErrorCode error,
 
     if (resp) {
         env.payload.response = *resp;
-        /* 确保错误消息是字符串拷贝而非回调 */
     } else {
         env.payload.response.request_id = request_id;
         env.payload.response.error = error;
@@ -35,10 +85,12 @@ static void store_resp(uint32_t request_id, led_control_ErrorCode error,
     }
 
     pb_ostream_t s = pb_ostream_from_buffer(envelope_resp_buf, sizeof(envelope_resp_buf));
-    if (pb_encode(&s, led_control_Envelope_fields, &env))
+    if (pb_encode(&s, led_control_Envelope_fields, &env)) {
         envelope_resp_len = s.bytes_written;
-    else
+        envelope_notify_all();
+    } else {
         ESP_LOGE(TAG, "encode fail: %s", PB_GET_ERROR(&s));
+    }
 }
 
 /* ======================== GetDeviceInfo ======================== */
@@ -73,7 +125,7 @@ void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
     switch (env.which_payload) {
 
     case led_control_Envelope_ota_tag:
-        ota_handle_cmd(&env.payload.ota, env.request_id);
+        ota_handle_cmd(&env.payload.ota, env.request_id, conn_handle);
         return;
 
     case led_control_Envelope_get_device_info_tag:
@@ -102,4 +154,9 @@ void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
                    "unknown type", NULL);
         return;
     }
+}
+
+void envelope_set_data_handle(uint16_t handle)
+{
+    s_data_handle = handle;
 }
