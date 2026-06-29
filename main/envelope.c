@@ -19,8 +19,7 @@ uint16_t envelope_resp_len;
 
 static bool str_cb(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
-    const char *s = (const char *)(*arg);
-    if (!s) s = "";
+    const char *s = *arg ? (const char *)(*arg) : "";
     return pb_encode_string(stream, (uint8_t *)s, strlen(s));
 }
 

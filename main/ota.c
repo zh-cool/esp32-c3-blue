@@ -24,35 +24,35 @@ static uint32_t s_ota_received;
 
 /* ======================== 字符串编码 callback ======================== */
 
-static bool str_cb(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
+/* CALLBACK 编码 error_msg — nanopb 自动写 tag, callback 只写值 */
+static bool msg_cb(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
-    const char *s = (const char *)(*arg);
+    const char *s = *arg ? (const char *)(*arg) : "";
     if (!s) s = "";
     return pb_encode_string(stream, (uint8_t *)s, strlen(s));
 }
 
 /* ======================== 构造并存入响应缓冲区 ======================== */
 
-static void store_resp(uint32_t request_id, led_control_ErrorCode error,
-                       const char *msg, const led_control_OTAResponse *ota_r)
+static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r)
 {
-    led_control_EnvelopeResponse env_resp = led_control_EnvelopeResponse_init_default;
+    led_control_EnvelopeResponse env_resp = led_control_EnvelopeResponse_init_zero;
     env_resp.request_id = request_id;
-    env_resp.error = error;
-    env_resp.error_msg.arg = (void *)(msg ? msg : "");
-    env_resp.error_msg.funcs.encode = str_cb;
+    env_resp.error = led_control_ErrorCode_OK;
+    /* EnvelopeResponse.error_msg — 报错时才传 */
+    if (ota_r && ota_r->error != led_control_ErrorCode_OK) {
+        env_resp.error = ota_r->error;
+        env_resp.error_msg.funcs.encode = msg_cb;
+    }
 
     if (ota_r) {
         env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
         env_resp.result.ota_result = *ota_r;
-        /* OTAResponse.error_msg 是 CALLBACK, 必须设置, 否则编码异常 */
-        if (env_resp.result.ota_result.error_msg.funcs.encode == NULL) {
-            env_resp.result.ota_result.error_msg.funcs.encode = str_cb;
-            env_resp.result.ota_result.error_msg.arg = (void *)"";
-        }
+        /* OTAResponse.error_msg — CALLBACK 必须设, 否则写裸 00 */
+        env_resp.result.ota_result.error_msg.funcs.encode = msg_cb;
     }
 
-    led_control_Envelope env = led_control_Envelope_init_default;
+    led_control_Envelope env = led_control_Envelope_init_zero;
     env.protocol_version = 2;
     env.request_id = request_id;
     env.which_payload = led_control_Envelope_response_tag;
@@ -86,12 +86,13 @@ static bool chunk_cb(pb_istream_t *stream, const pb_field_t *field, void **arg)
         s_ota_received += to_read;
 
         if (first || stream->bytes_left == 0) {
-            led_control_OTAResponse r = led_control_OTAResponse_init_default;
+            led_control_OTAResponse r = led_control_OTAResponse_init_zero;
             r.error = led_control_ErrorCode_OK;
             r.received_bytes = s_ota_received;
             r.total_bytes = s_ota_total;
             r.percent = (s_ota_received * 100 / s_ota_total);
-            store_resp(req_id, led_control_ErrorCode_OK, NULL, &r);
+            r.error_msg.funcs.encode = msg_cb;
+            store_resp(req_id, &r);
             first = false;
         }
     }
@@ -114,11 +115,7 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
     led_control_OTARequest *req = &env.payload.ota;
     uint32_t req_id = env.request_id;
 
-    led_control_OTAResponse resp = led_control_OTAResponse_init_default;
-    resp.received_bytes = s_ota_received;
-    resp.total_bytes = s_ota_total;
-    resp.percent = (s_ota_total > 0) ? (s_ota_received * 100 / s_ota_total) : 0;
-    resp.done = false;
+    led_control_OTAResponse resp = led_control_OTAResponse_init_zero;
     const char *err = NULL;
 
     switch (req->cmd) {
@@ -133,7 +130,9 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         if (!s_ota_partition) { err = "no partition"; break; }
         if (esp_ota_begin(s_ota_partition, s_ota_total, &s_ota_handle) != ESP_OK) { err = "begin fail"; break; }
         s_active = true;
-        resp.percent = 0; resp.received_bytes = 0;
+        resp.received_bytes = 0;
+        resp.total_bytes = s_ota_total;
+        resp.percent = 0;
         break;
     }
 
@@ -161,9 +160,10 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         s_active = false;
         if (esp_ota_set_boot_partition(s_ota_partition) != ESP_OK) { err = "set_boot fail"; break; }
         resp.received_bytes = s_ota_received;
+        resp.total_bytes = s_ota_total;
         resp.percent = 100; resp.done = true;
-        err = "OK, restarting...";
-        store_resp(req_id, led_control_ErrorCode_OK, err, &resp);
+        resp.error_msg.arg = (void *)"OK, restarting...";
+        store_resp(req_id, &resp);
         ESP_LOGI(TAG, "COMPLETE %u bytes", s_ota_received);
         vTaskDelay(pdMS_TO_TICKS(1000));
         esp_restart();
@@ -181,8 +181,15 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         break;
     }
 
-    if (err) resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
-    store_resp(req_id, resp.error, err, &resp);
+    /* 填充进度并发送响应 */
+    resp.received_bytes = s_ota_received;
+    resp.total_bytes = s_ota_total;
+    resp.percent = (s_ota_total > 0) ? (s_ota_received * 100 / s_ota_total) : 0;
+    if (err) {
+        resp.error = led_control_ErrorCode_ERR_OTA_WRITE_FLASH;
+        resp.error_msg.arg = (void *)err;
+    }
+    store_resp(req_id, &resp);
 }
 
 /* ======================== 断开 ======================== */
