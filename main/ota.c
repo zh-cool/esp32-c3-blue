@@ -65,22 +65,10 @@ static void delayed_restart(void *arg)
     esp_restart();
 }
 
-/* ======================== 处理 Envelope ======================== */
+/* ======================== 处理 OTA 命令 ======================== */
 
-void ota_handle_envelope(const uint8_t *data, size_t len)
+void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id)
 {
-    pb_istream_t stream = pb_istream_from_buffer(data, len);
-    led_control_Envelope env = led_control_Envelope_init_default;
-
-    if (!pb_decode(&stream, led_control_Envelope_fields, &env)) {
-        ESP_LOGW(TAG, "decode fail");
-        return;
-    }
-    if (env.which_payload != led_control_Envelope_ota_tag) return;
-
-    led_control_OTARequest *req = &env.payload.ota;
-    uint32_t req_id = env.request_id;
-
     /* ================== CMD_DATA ================== */
     if (req->cmd == led_control_OTARequest_Cmd_CMD_DATA) {
         if (!s_active || req->which_params != led_control_OTARequest_data_params_tag) {

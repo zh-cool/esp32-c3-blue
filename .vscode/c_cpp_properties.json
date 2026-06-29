@@ -11,6 +11,9 @@
                 "CONFIG_BT_NIMBLE_ENABLED=1"
             ],
             "includePath": [
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/app_update/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bootloader_support/bootloader_flash/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/bootloader_support/include",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/common/api/include/api",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/common/ble_log/include",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/common/btc/profile/esp/blufi/include",
@@ -48,6 +51,8 @@
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/host/nimble/port/include",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/include/esp32c3/include",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/bt/porting/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_app_format/include",
+                "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_bootloader_format/include",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_common/include",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_event/include",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/esp_hw_support/debug_probe/include",
@@ -108,7 +113,9 @@
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/soc/esp32c3/register",
                 "/home/austin/.espressif/v5.5.4/esp-idf/components/soc/include",
                 "/home/austin/Project/ESP32_C3/blue/build/config",
-                "/home/austin/Project/ESP32_C3/blue/main"
+                "/home/austin/Project/ESP32_C3/blue/main",
+                "/home/austin/Project/ESP32_C3/blue/main/proto-c",
+                "/home/austin/Project/ESP32_C3/blue/managed_components/livekit__nanopb/include"
 ]
         }
     ],

@@ -9,12 +9,12 @@
 void ota_init(void);
 
 /**
- * @brief 处理 Envelope 中的 OTARequest（原始 Envelope 字节）
- * @param data  Envelope 原始字节
- * @param len   数据长度
+ * @brief 处理 OTA 命令
+ * @param req    已解码的 OTARequest
+ * @param req_id 请求 ID（原样返回响应）
  * @note  响应写入 envelope_resp_buf，由对端读取
  */
-void ota_handle_envelope(const uint8_t *data, size_t len);
+void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id);
 
 /**
  * @brief 断开连接时中止 OTA

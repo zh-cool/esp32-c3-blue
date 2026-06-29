@@ -73,7 +73,7 @@ void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
     switch (env.which_payload) {
 
     case led_control_Envelope_ota_tag:
-        ota_handle_envelope(data, len);
+        ota_handle_cmd(&env.payload.ota, env.request_id);
         return;
 
     case led_control_Envelope_get_device_info_tag:
