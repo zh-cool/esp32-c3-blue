@@ -107,10 +107,32 @@ static bool chunk_cb(pb_istream_t *stream, const pb_field_t *field, void **arg)
 
 /* ======================== 处理 Envelope ======================== */
 
+/* 从原始 protobuf 数据中提取 field 2 (request_id) 的 varint 值 */
+static uint32_t peek_req_id(const uint8_t *data, size_t len)
+{
+    /* tag for field 2 varint = 0x10 */
+    for (size_t i = 0; i + 1 < len; i++) {
+        if (data[i] == 0x10) {
+            uint32_t v = 0; int s = 0;
+            for (size_t j = i + 1; j < len; j++, s += 7) {
+                v |= (uint32_t)(data[j] & 0x7F) << s;
+                if (!(data[j] & 0x80)) return v;
+            }
+        }
+    }
+    return 0;
+}
+
 void ota_handle_envelope(const uint8_t *data, size_t len)
 {
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     led_control_Envelope env = led_control_Envelope_init_default;
+
+    /* 预先提取 request_id 供 chunk_cb 使用 */
+    s_chunk_req_id = peek_req_id(data, len);
+
+    /* 预先设 chunk callback — 只有 CMD_DATA 含 chunk 字段才会触发 */
+    env.payload.ota.params.data_params.chunk.funcs.decode = chunk_cb;
 
     if (!pb_decode(&stream, led_control_Envelope_fields, &env)) {
         ESP_LOGW(TAG, "decode fail");
@@ -119,7 +141,18 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
     if (env.which_payload != led_control_Envelope_ota_tag) return;
 
     led_control_OTARequest *req = &env.payload.ota;
-    uint32_t req_id = env.request_id;
+    req_id = env.request_id;
+
+    /* CMD_DATA 已在解码过程中由 chunk_cb 处理并调用 store_resp */
+    if (req->cmd == led_control_OTARequest_Cmd_CMD_DATA) {
+        if (s_active && req->which_params == led_control_OTARequest_data_params_tag)
+            ESP_LOGI(TAG, "DATA: offset=%u OK", req->params.data_params.offset);
+        else
+            ESP_LOGW(TAG, "DATA: no data or not active");
+        return;
+    }
+
+    /* START / COMPLETE / ABORT */
     led_control_OTAResponse resp = led_control_OTAResponse_init_zero;
     const char *err = NULL;
 
