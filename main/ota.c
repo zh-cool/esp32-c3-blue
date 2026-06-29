@@ -22,6 +22,9 @@ static const esp_partition_t *s_ota_partition;
 static uint32_t s_ota_total;
 static uint32_t s_ota_received;
 
+/* chunk_cb 通过此静态变量获取请求 ID（避免 nanopb 清零 oneof 子消息时覆盖 callback arg） */
+static uint32_t s_chunk_req_id;
+
 /* ======================== 字符串编码 callback ======================== */
 
 /* CALLBACK 编码 error_msg — nanopb 自动写 tag, callback 只写值 */
@@ -71,7 +74,8 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
 
 static bool chunk_cb(pb_istream_t *stream, const pb_field_t *field, void **arg)
 {
-    uint32_t req_id = *(uint32_t *)(*arg);
+    (void)arg;
+    uint32_t req_id = s_chunk_req_id;
     bool first = true;
 
     while (stream->bytes_left) {
@@ -145,10 +149,10 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
                  req->params.data_params.offset);
 
         /* chunk 已被首次解码消耗(无 callback 丢弃), 用原始数据二次解码 */
+        s_chunk_req_id = req_id;
         pb_istream_t s2 = pb_istream_from_buffer(data, len);
         led_control_Envelope e2 = led_control_Envelope_init_zero;
         e2.payload.ota.params.data_params.chunk.funcs.decode = chunk_cb;
-        e2.payload.ota.params.data_params.chunk.arg = &req_id;
         if (!pb_decode(&s2, led_control_Envelope_fields, &e2))
             ESP_LOGE(TAG, "chunk decode FAIL");
         else
