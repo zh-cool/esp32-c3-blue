@@ -28,7 +28,7 @@ static uint32_t s_ota_received;
 static bool msg_cb(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
     const char *s = *arg ? (const char *)(*arg) : "";
-    if (!s) s = "";
+    if (*s == '\0') return true;  /* 空消息 → 跳过, 避免写裸 00 */
     return pb_encode_string(stream, (uint8_t *)s, strlen(s));
 }
 
@@ -48,8 +48,10 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
     if (ota_r) {
         env_resp.which_result = led_control_EnvelopeResponse_ota_result_tag;
         env_resp.result.ota_result = *ota_r;
-        /* OTAResponse.error_msg — CALLBACK 必须设, 否则写裸 00 */
-        env_resp.result.ota_result.error_msg.funcs.encode = msg_cb;
+        /* 仅当 error_msg 非空时才设 CALLBACK, 空消息跳过 */
+        if (ota_r->error_msg.arg && *(const char *)(ota_r->error_msg.arg)) {
+            env_resp.result.ota_result.error_msg.funcs.encode = msg_cb;
+        }
     }
 
     led_control_Envelope env = led_control_Envelope_init_zero;

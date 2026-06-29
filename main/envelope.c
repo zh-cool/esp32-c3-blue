@@ -20,6 +20,7 @@ uint16_t envelope_resp_len;
 static bool str_cb(pb_ostream_t *stream, const pb_field_t *field, void * const *arg)
 {
     const char *s = *arg ? (const char *)(*arg) : "";
+    if (*s == '\0') return true;  /* 空 → 跳过, 避免写裸 00 */
     return pb_encode_string(stream, (uint8_t *)s, strlen(s));
 }
 
