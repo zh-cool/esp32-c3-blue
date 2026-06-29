@@ -88,6 +88,15 @@ static bool extract_chunk(const uint8_t *data, size_t len,
     return false;
 }
 
+/* 延时重启任务 — 给手机留时间读取响应 */
+static void delayed_restart(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(3000));
+    ESP_LOGI(TAG, "restarting now");
+    esp_restart();
+}
+
 /* ======================== 处理 Envelope ======================== */
 
 void ota_handle_envelope(const uint8_t *data, size_t len)
@@ -207,15 +216,6 @@ void ota_on_disconnect(void)
         s_active = false;
         ESP_LOGI(TAG, "abort (disconnect)");
     }
-}
-
-/* 延时重启任务 — 给手机留时间读取响应 */
-static void delayed_restart(void *arg)
-{
-    (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(3000));
-    ESP_LOGI(TAG, "restarting now");
-    esp_restart();
 }
 
 void ota_init(void)
