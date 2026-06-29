@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include "led_control.pb.h"
 
 /**
  * @brief 初始化 OTA 模块
