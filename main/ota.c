@@ -71,7 +71,7 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
 
 static bool chunk_cb(pb_istream_t *stream, const pb_field_t *field, void **arg)
 {
-    uint32_t req_id = *(uint32_t *)arg;
+    uint32_t req_id = *(uint32_t *)(*arg);
     bool first = true;
 
     while (stream->bytes_left) {
@@ -141,24 +141,18 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         if (!s_active) { err = "not started"; break; }
         if (req->which_params != led_control_OTARequest_data_params_tag) { err = "no data"; break; }
 
-        ESP_LOGI(TAG, "DATA: re-decoding with callback...");
+        ESP_LOGI(TAG, "DATA: offset=%u (first decode already consumed chunk)",
+                 req->params.data_params.offset);
 
-        ESP_LOGI(TAG, "DATA: %u bytes at offset %u",
-                 req->params.data_params.chunk.arg ? 0 : 0, req->params.data_params.offset);
-
-        /* 用原始数据二次解码, 设 chunk callback 写入 flash */
+        /* chunk 已被首次解码消耗(无 callback 丢弃), 用原始数据二次解码 */
         pb_istream_t s2 = pb_istream_from_buffer(data, len);
         led_control_Envelope e2 = led_control_Envelope_init_zero;
         e2.payload.ota.params.data_params.chunk.funcs.decode = chunk_cb;
         e2.payload.ota.params.data_params.chunk.arg = &req_id;
-
-        if (!pb_decode(&s2, led_control_Envelope_fields, &e2)) {
+        if (!pb_decode(&s2, led_control_Envelope_fields, &e2))
             ESP_LOGE(TAG, "chunk decode FAIL");
-            esp_ota_abort(s_ota_handle);
-            s_active = false;
-        } else {
+        else
             ESP_LOGI(TAG, "chunk decode OK");
-        }
         return;
     }
 
