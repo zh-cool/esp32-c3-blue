@@ -105,9 +105,10 @@ static bool extract_chunk(const uint8_t *data, size_t len,
     /* 现在在 payload oneof, 找 ota 字段 (field 50, tag=0x92 vari...) */
     p = scan_to(data, len, p, 0x92);
     if (p >= len) return false;
-    p++;                                 /* skip 0x92 */
-    p = read_varint(data, len, p, &val); /* skip tag continuation + length */
-    /* 现在 p 指向 OTARequest 内容的开头, 找 data_params (field 11, tag=0x5a) */
+    p++;                                 /* skip 0x92 first byte */
+    p = read_varint(data, len, p, &val); /* consume rest of tag */
+    p = read_varint(data, len, p, &val); /* read OTARequest length, skip over it */
+    /* 现在 p 指向 OTARequest 内容开头 */
     p = scan_to(data, len, p, 0x5a);
     if (p >= len) return false;
     p++;                                 /* skip 0x5a */
