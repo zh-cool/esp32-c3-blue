@@ -76,7 +76,7 @@ void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id)
             return;
         }
 
-        uint8_t *chunk_data = req->params.data_params.chunk.bytes;
+        const uint8_t *chunk_data = req->params.data_params.chunk.bytes;
         size_t chunk_len = req->params.data_params.chunk.size;
 
         esp_err_t err = esp_ota_write(s_ota_handle, chunk_data, chunk_len);
