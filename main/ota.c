@@ -78,45 +78,53 @@ static size_t read_varint(const uint8_t *d, size_t len, size_t p, uint32_t *val)
     return p;
 }
 
-/* ====== 提取 chunk bytes ====== */
+/* ====== 提取 chunk bytes ======
+ * protobuf 字段无序, 在 data_params 内同时处理 offset(08) 和 chunk(12) 任意顺序
+ */
 static bool extract_chunk(const uint8_t *data, size_t len,
                           const uint8_t **out, size_t *out_len, int *dbg)
 {
     size_t p = 0; uint32_t v;
 
-    /* Envelope: proto & req_id */
+    /* --- Envelope 头部 --- */
     if (p >= len || data[p++] != 0x08) { *dbg = 1; return false; }
     p = read_varint(data, len, p, &v);
     if (p >= len || data[p++] != 0x10) { *dbg = 2; return false; }
     p = read_varint(data, len, p, &v);
 
-    /* find 0x92 (1st byte of ota tag) */
+    /* --- ota 字段 --- */
     while (p < len && data[p] != 0x92) p++;
     if (p >= len) { *dbg = 3; return false; }
-    p++;                             /* skip 0x92 */
-    p = read_varint(data, len, p, &v); /* rest of tag */
-    p = read_varint(data, len, p, &v); /* ota length */
-    /* now at OTARequest content */
+    p++;
+    p = read_varint(data, len, p, &v);
+    p = read_varint(data, len, p, &v);
 
-    /* find 0x5a (data_params) */
+    /* --- data_params 内部: offset(08) chunk(12) 任意顺序 --- */
+    /* 先找到 data_params 的开头 */
     while (p < len && data[p] != 0x5a) p++;
     if (p >= len) { *dbg = 4; return false; }
-    p++;                             /* skip 0x5a */
-    p = read_varint(data, len, p, &v); /* dp length */
-
-    /* skip offset (08 [varint]) */
-    if (p >= len || data[p] != 0x08) { *dbg = 5; return false; }
     p++;
-    p = read_varint(data, len, p, &v);
-
-    /* find 0x12 (chunk) */
-    if (p >= len || data[p] != 0x12) { *dbg = 6; return false; }
-    p++;
-    p = read_varint(data, len, p, &v);
-    *out_len = v;
-    if (p + *out_len > len) { *dbg = 7; return false; }
-    *out = data + p;
-    return true;
+    p = read_varint(data, len, p, &v);  /* skip dp length */
+    /* 现在在 data_params 内容中, 处理两个字段 */
+    for (int i = 0; i < 2; i++) {
+        if (p >= len) { *dbg = 5; return false; }
+        if (data[p] == 0x12) {
+            /* chunk field */
+            p++;
+            p = read_varint(data, len, p, &v);
+            *out_len = v;
+            *out = data + p;
+            p += *out_len;
+        } else if (data[p] == 0x08) {
+            /* offset field */
+            p++;
+            p = read_varint(data, len, p, &v);
+        } else {
+            *dbg = 6;
+            return false;
+        }
+    }
+    return *out != NULL;
 }
 
 /* 延时重启任务 */
