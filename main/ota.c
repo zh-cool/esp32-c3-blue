@@ -66,7 +66,7 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
         ESP_LOGE(TAG, "encode fail: %s", PB_GET_ERROR(&s));
 }
 
-/* 从 p 开始读 protobuf varint, 返回 (值, 新位置) */
+/* 读 varint, 返回新位置 */
 static size_t read_varint(const uint8_t *d, size_t len, size_t p, uint32_t *val)
 {
     *val = 0; int shift = 0;
@@ -78,60 +78,48 @@ static size_t read_varint(const uint8_t *d, size_t len, size_t p, uint32_t *val)
     return p;
 }
 
-/* 顺序扫描下一字节, 只要 != target 就前进 */
-static size_t scan_to(const uint8_t *d, size_t len, size_t p, uint8_t target)
-{
-    while (p < len && d[p] != target) p++;
-    return p;
-}
-
-/* ====== 从原始 protobuf 可靠解析 chunk bytes ======
- * 顺序扫描: 0x92(ota) → 0x5a(data_params) → 0x12(chunk)
- * 每次进入下一层后, 只在本层范围内查找, 避免固件数据中的假匹配
- */
+/* ====== 提取 chunk bytes ====== */
 static bool extract_chunk(const uint8_t *data, size_t len,
-                          const uint8_t **out, size_t *out_len)
+                          const uint8_t **out, size_t *out_len, int *dbg)
 {
-    size_t p = 0;
-    uint32_t val;
+    size_t p = 0; uint32_t v;
 
-    /* --- 先跳过 Envelope 头部 --- */
-    /* protocol_version (field 1, varint): 08 [varint] */
-    if (p >= len || data[p++] != 0x08) return false;
-    p = read_varint(data, len, p, &val);
-    /* request_id (field 2, varint): 10 [varint] */
-    if (p >= len || data[p++] != 0x10) return false;
-    p = read_varint(data, len, p, &val);
-    /* 现在在 payload oneof, 找 ota 字段 (field 50, tag=0x92 vari...) */
-    p = scan_to(data, len, p, 0x92);
-    if (p >= len) return false;
-    p++;                                 /* skip 0x92 first byte */
-    p = read_varint(data, len, p, &val); /* consume rest of tag */
-    p = read_varint(data, len, p, &val); /* read OTARequest length, skip over it */
-    /* 现在 p 指向 OTARequest 内容开头 */
-    p = scan_to(data, len, p, 0x5a);
-    if (p >= len) return false;
-    p++;                                 /* skip 0x5a */
-    p = read_varint(data, len, p, &val); /* skip tag continuation + length */
-    /* 现在 p 指向 OTADataParams 内容的开头 */
-    /* 先跳过 offset (field 1, tag=0x08, 但可能含有 0x12 字节) */
-    /* 唯一可靠的: 逐字节前进, 直到 0x12 且确定是 chunk tag 而非 offset 值内的字节 */
-    /* offset 是 varint, 在 offset 的 varint 结束后至少有一个 tag 字节 */
-    /* 先跳过 tag 0x08 */
-    if (p < len && data[p] == 0x08) p++;
-    else return false;
-    p = read_varint(data, len, p, &val); /* skip offset value */
-    /* 现在应该指向 chunk tag 0x12 */
-    if (p >= len || data[p] != 0x12) return false;
-    p++;                                 /* skip 0x12 */
-    p = read_varint(data, len, p, &val); /* read chunk length */
-    *out_len = val;
-    if (p + *out_len > len) return false;
+    /* Envelope: proto & req_id */
+    if (p >= len || data[p++] != 0x08) { *dbg = 1; return false; }
+    p = read_varint(data, len, p, &v);
+    if (p >= len || data[p++] != 0x10) { *dbg = 2; return false; }
+    p = read_varint(data, len, p, &v);
+
+    /* find 0x92 (1st byte of ota tag) */
+    while (p < len && data[p] != 0x92) p++;
+    if (p >= len) { *dbg = 3; return false; }
+    p++;                             /* skip 0x92 */
+    p = read_varint(data, len, p, &v); /* rest of tag */
+    p = read_varint(data, len, p, &v); /* ota length */
+    /* now at OTARequest content */
+
+    /* find 0x5a (data_params) */
+    while (p < len && data[p] != 0x5a) p++;
+    if (p >= len) { *dbg = 4; return false; }
+    p++;                             /* skip 0x5a */
+    p = read_varint(data, len, p, &v); /* dp length */
+
+    /* skip offset (08 [varint]) */
+    if (p >= len || data[p] != 0x08) { *dbg = 5; return false; }
+    p++;
+    p = read_varint(data, len, p, &v);
+
+    /* find 0x12 (chunk) */
+    if (p >= len || data[p] != 0x12) { *dbg = 6; return false; }
+    p++;
+    p = read_varint(data, len, p, &v);
+    *out_len = v;
+    if (p + *out_len > len) { *dbg = 7; return false; }
     *out = data + p;
     return true;
 }
 
-/* 延时重启任务 — 给手机留时间读取响应 */
+/* 延时重启任务 */
 static void delayed_restart(void *arg)
 {
     (void)arg;
@@ -165,10 +153,14 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
 
         const uint8_t *chunk_data;
         size_t chunk_len;
-        if (!extract_chunk(data, len, &chunk_data, &chunk_len)) {
-            ESP_LOGE(TAG, "DATA: no chunk found");
+        int dbg = 0;
+        if (!extract_chunk(data, len, &chunk_data, &chunk_len, &dbg)) {
+            ESP_LOGE(TAG, "DATA: extract fail at step %d", dbg);
             return;
         }
+
+        ESP_LOGI(TAG, "DATA: offset=%u, %zu bytes",
+                 req->params.data_params.offset, chunk_len);
 
         esp_err_t err = esp_ota_write(s_ota_handle, chunk_data, chunk_len);
         if (err != ESP_OK) {
@@ -231,7 +223,6 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
         resp.error_msg.arg = (void *)"OK, restarting...";
         store_resp(req_id, &resp);
         ESP_LOGI(TAG, "COMPLETE %u bytes, restart in 3s", s_ota_received);
-        /* 独立任务延时重启, 不阻塞 NimBLE */
         xTaskCreate(delayed_restart, "ota_rb", 2048, NULL, 5, NULL);
         return;
     }
