@@ -82,49 +82,39 @@ static size_t read_varint(const uint8_t *d, size_t len, size_t p, uint32_t *val)
  * protobuf 字段无序, 在 data_params 内同时处理 offset(08) 和 chunk(12) 任意顺序
  */
 static bool extract_chunk(const uint8_t *data, size_t len,
-                          const uint8_t **out, size_t *out_len, int *dbg)
+                          const uint8_t **out, size_t *out_len)
 {
     size_t p = 0; uint32_t v;
 
-    /* --- Envelope 头部 --- */
-    if (p >= len || data[p++] != 0x08) { *dbg = 1; return false; }
+    if (p >= len || data[p++] != 0x08) return false;
     p = read_varint(data, len, p, &v);
-    if (p >= len || data[p++] != 0x10) { *dbg = 2; return false; }
+    if (p >= len || data[p++] != 0x10) return false;
     p = read_varint(data, len, p, &v);
 
-    /* --- ota 字段 --- */
     while (p < len && data[p] != 0x92) p++;
-    if (p >= len) { *dbg = 3; return false; }
+    if (p >= len) return false;
     p++;
     p = read_varint(data, len, p, &v);
     p = read_varint(data, len, p, &v);
 
-    /* --- OTARequest 内部: 跳过 cmd 字段, 再找 data_params --- */
-    /* 显式跳过 cmd (tag 08 + value varint) 避免 scan_to 误匹长度中的 0x5a */
-    if (p >= len || data[p] != 0x08) { *dbg = 4; return false; }
+    if (p >= len || data[p] != 0x08) return false;
     p++;
-    p = read_varint(data, len, p, &v);  /* skip cmd value */
-    /* 现在是 data_params 字段 (tag 0x5a) */
-    if (p >= len || data[p] != 0x5a) { *dbg = 5; return false; }
+    p = read_varint(data, len, p, &v);
+    if (p >= len || data[p] != 0x5a) return false;
     p++;
-    p = read_varint(data, len, p, &v);  /* skip dp length */
-    /* data_params: 可能有 chunk(12) 和/或 offset(08), 任意顺序, offset=0 时省略 */
+    p = read_varint(data, len, p, &v);
+
     *out = NULL;
     for (int i = 0; i < 2; i++) {
         if (p >= len) break;
         if (data[p] == 0x12) {
-            p++;
-            p = read_varint(data, len, p, &v);
-            *out_len = v;
-            *out = data + p;
-            p += *out_len;
+            p++; p = read_varint(data, len, p, &v);
+            *out_len = v; *out = data + p; p += *out_len;
         } else if (data[p] == 0x08) {
-            p++;
-            p = read_varint(data, len, p, &v);
+            p++; p = read_varint(data, len, p, &v);
         } else break;
     }
-    if (!*out) { *dbg = 7; return false; }
-    return true;
+    return *out != NULL;
 }
 
 /* 延时重启任务 */
@@ -161,14 +151,10 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
 
         const uint8_t *chunk_data;
         size_t chunk_len;
-        int dbg = 0;
-        if (!extract_chunk(data, len, &chunk_data, &chunk_len, &dbg)) {
-            ESP_LOGE(TAG, "DATA: extract fail at step %d", dbg);
+        if (!extract_chunk(data, len, &chunk_data, &chunk_len)) {
+            ESP_LOGW(TAG, "DATA: extract chunk failed");
             return;
         }
-
-        ESP_LOGI(TAG, "DATA: offset=%u, %zu bytes",
-                 req->params.data_params.offset, chunk_len);
 
         esp_err_t err = esp_ota_write(s_ota_handle, chunk_data, chunk_len);
         if (err != ESP_OK) {
