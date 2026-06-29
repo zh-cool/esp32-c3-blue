@@ -127,6 +127,10 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
 {
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     led_control_Envelope env = led_control_Envelope_init_default;
+    uint32_t req_id;
+    led_control_OTARequest *req;
+    led_control_OTAResponse resp;
+    const char *err;
 
     /* 预先提取 request_id 供 chunk_cb 使用 */
     s_chunk_req_id = peek_req_id(data, len);
@@ -140,7 +144,7 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
     }
     if (env.which_payload != led_control_Envelope_ota_tag) return;
 
-    led_control_OTARequest *req = &env.payload.ota;
+    req = &env.payload.ota;
     req_id = env.request_id;
 
     /* CMD_DATA 已在解码过程中由 chunk_cb 处理并调用 store_resp */
@@ -153,8 +157,8 @@ void ota_handle_envelope(const uint8_t *data, size_t len)
     }
 
     /* START / COMPLETE / ABORT */
-    led_control_OTAResponse resp = led_control_OTAResponse_init_zero;
-    const char *err = NULL;
+    resp = led_control_OTAResponse_init_zero;
+    err = NULL;
 
     switch (req->cmd) {
 
