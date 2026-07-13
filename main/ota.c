@@ -149,8 +149,9 @@ void ota_handle_cmd(const led_control_OTARequest *req, uint32_t req_id, uint16_t
     case led_control_OTARequest_Cmd_CMD_ABORT:
         if (s_active) { esp_ota_abort(s_ota_handle); s_active = false; }
         ESP_LOGI(TAG, "ABORT");
-        err = "aborted";
-        break;
+        resp.error_msg[0] = '\0';
+        store_resp(req_id, &resp);
+        return;
 
     default:
         err = "unknown cmd";

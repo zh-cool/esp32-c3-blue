@@ -99,7 +99,7 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                   .uuid = BLE_UUID16_DECLARE(0x2901),
                   .att_flags = BLE_ATT_F_READ,
                   .access_cb = desc_access,
-                  .arg = (void *)"TX Data",
+                  .arg = (void *)"notify_data",
               }, { 0 } },
             }, {
                 .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
@@ -109,7 +109,7 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                     .uuid = BLE_UUID16_DECLARE(0x2901),
                     .att_flags = BLE_ATT_F_READ,
                     .access_cb = desc_access,
-                    .arg = (void *)"Custom Data",
+                    .arg = (void *)"custom_data",
                 }, { 0 } },
             }, { 0 },
         },
