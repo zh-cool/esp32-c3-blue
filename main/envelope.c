@@ -51,17 +51,19 @@ void envelope_remove_peer(uint16_t conn_handle)
 
 void envelope_notify_all(void)
 {
-    if (!envelope_resp_len || !s_data_handle || s_peer_count == 0) return;
-
-    struct os_mbuf *om = ble_hs_mbuf_from_flat(envelope_resp_buf, envelope_resp_len);
-    if (!om) return;
+    if (!envelope_resp_len) return;
+    if (!s_data_handle) { ESP_LOGD(TAG, "notify: no handle"); return; }
+    if (s_peer_count == 0) { ESP_LOGD(TAG, "notify: no peers"); return; }
 
     for (int i = 0; i < s_peer_count; i++) {
-        /* 每个 peer 需要独立的 mbuf */
-        struct os_mbuf *m = (i == 0) ? om : ble_hs_mbuf_from_flat(envelope_resp_buf, envelope_resp_len);
-        if (m) {
-            int rc = ble_gatts_notify_custom(s_peers[i], s_data_handle, m);
-            if (rc) os_mbuf_free_chain(m);
+        struct os_mbuf *om = ble_hs_mbuf_from_flat(envelope_resp_buf, envelope_resp_len);
+        if (!om) continue;
+        int rc = ble_gatts_notify_custom(s_peers[i], s_data_handle, om);
+        if (rc) {
+            ESP_LOGD(TAG, "notify peer %d fail rc=%d", s_peers[i], rc);
+            os_mbuf_free_chain(om);
+        } else {
+            ESP_LOGD(TAG, "notify peer %d OK (%u bytes)", s_peers[i], envelope_resp_len);
         }
     }
 }
