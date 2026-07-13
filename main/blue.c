@@ -27,12 +27,13 @@ static const char *TAG = "BLUE";
 #define DEVICE_NAME "ESP32-C3-Blue"
 
 #define GATT_SVC_UUID       0x00FF
-#define GATT_CHR_UUID_TX    0xFF01
-#define GATT_CHR_UUID_DATA  0xFF03
+#define GATT_CHR_UUID_CUSTOM_DATA    0xFF01
+#define GATT_CHR_UUID_NOTIFY_DATA  0xFF03
 
 /* ======================== 全局状态 ======================== */
 
-static uint16_t s_data_handle;  /* Custom Data 句柄 */
+static uint16_t s_cmd_handle;    /* 0xFF01 custom_data（接收请求）*/
+static uint16_t s_notify_handle; /* 0xFF03 notify_data（通知 + 读兜底）*/
 
 /* 前向声明 */
 static void adv_start(void);
@@ -56,25 +57,18 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
         uint16_t len = OS_MBUF_PKTLEN(ctxt->om);
         if (len == 0) return 0;
 
-        if (attr_handle == s_data_handle) {
+        if (attr_handle == s_cmd_handle) {
             uint8_t buf[1024];
             if (len > sizeof(buf)) len = sizeof(buf);
             ble_hs_mbuf_to_flat(ctxt->om, buf, len, NULL);
             envelope_handle(conn_handle, buf, len);
             return 0;
         }
-
-        /* TX 特征值 — 简单文本 */
-        char tbuf[128];
-        if (len > sizeof(tbuf) - 1) len = sizeof(tbuf) - 1;
-        ble_hs_mbuf_to_flat(ctxt->om, tbuf, len, NULL);
-        tbuf[len] = '\0';
-        ESP_LOGI(TAG, "收到(TX): %s", tbuf);
         return 0;
     }
 
     case BLE_GATT_ACCESS_OP_READ_CHR:
-        if (attr_handle == s_data_handle && envelope_resp_len > 0) {
+        if (attr_handle == s_notify_handle && envelope_resp_len > 0) {
             os_mbuf_append(ctxt->om, envelope_resp_buf, envelope_resp_len);
             envelope_resp_len = 0;
         }
@@ -92,9 +86,9 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
         .uuid = BLE_UUID16_DECLARE(GATT_SVC_UUID),
         .characteristics = (struct ble_gatt_chr_def[]) {
-            { .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_TX),
+            { .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_NOTIFY_DATA),
               .access_cb = gatt_svc_access,
-              .flags = BLE_GATT_CHR_F_WRITE,
+              .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
               .descriptors = (struct ble_gatt_dsc_def[]) { {
                   .uuid = BLE_UUID16_DECLARE(0x2901),
                   .att_flags = BLE_ATT_F_READ,
@@ -102,10 +96,10 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                   .arg = (void *)"notify_data",
               }, { 0 } },
             }, {
-                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
+                .uuid = BLE_UUID16_DECLARE(GATT_CHR_UUID_CUSTOM_DATA),
                 .access_cb = gatt_svc_access,
-                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
-                .descriptors = (struct ble_gatt_dsc_def[]) { {
+                .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_WRITE,
+                .descriptors = (struct ble_gatt_dsc_def[]){ {
                     .uuid = BLE_UUID16_DECLARE(0x2901),
                     .att_flags = BLE_ATT_F_READ,
                     .access_cb = desc_access,
@@ -214,12 +208,15 @@ static void adv_start(void)
 static void ble_host_sync(void)
 {
     ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
-                       BLE_UUID16_DECLARE(GATT_CHR_UUID_DATA),
-                       NULL, &s_data_handle);
-    if (s_data_handle == 0)
-        ESP_LOGW(TAG, "未找到 DATA 句柄");
+                       BLE_UUID16_DECLARE(GATT_CHR_UUID_CUSTOM_DATA),
+                       NULL, &s_cmd_handle);
+    ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID),
+                       BLE_UUID16_DECLARE(GATT_CHR_UUID_NOTIFY_DATA),
+                       NULL, &s_notify_handle);
+    if (s_notify_handle == 0)
+        ESP_LOGW(TAG, "未找到 NOTIFY 句柄");
     else
-        envelope_set_data_handle(s_data_handle);
+        envelope_set_data_handle(s_notify_handle);
     adv_start();
 }
 
