@@ -51,19 +51,17 @@ void envelope_remove_peer(uint16_t conn_handle)
 
 void envelope_notify_all(void)
 {
-    if (!envelope_resp_len) return;
-    if (!s_data_handle) { ESP_LOGD(TAG, "notify: no handle"); return; }
-    if (s_peer_count == 0) { ESP_LOGD(TAG, "notify: no peers"); return; }
+    if (!envelope_resp_len) { ESP_LOGI(TAG, "notify: no resp len"); return; }
+    if (!s_data_handle) { ESP_LOGI(TAG, "notify: no handle"); return; }
+    if (s_peer_count == 0) { ESP_LOGI(TAG, "notify: no peers"); return; }
 
     for (int i = 0; i < s_peer_count; i++) {
         struct os_mbuf *om = ble_hs_mbuf_from_flat(envelope_resp_buf, envelope_resp_len);
         if (!om) continue;
         int rc = ble_gatts_notify_custom(s_peers[i], s_data_handle, om);
         if (rc) {
-            ESP_LOGD(TAG, "notify peer %d fail rc=%d", s_peers[i], rc);
+            ESP_LOGI(TAG, "notify peer %d fail rc=%d", s_peers[i], rc);
             os_mbuf_free_chain(om);
-        } else {
-            ESP_LOGD(TAG, "notify peer %d OK (%u bytes)", s_peers[i], envelope_resp_len);
         }
     }
 }
