@@ -113,6 +113,9 @@ void envelope_handle(uint16_t conn_handle, const uint8_t *data, size_t len)
 {
     (void)conn_handle;
 
+    /* 清空过期响应，防止手机读到旧数据 */
+    envelope_resp_len = 0;
+
     pb_istream_t stream = pb_istream_from_buffer(data, len);
     led_control_Envelope env = led_control_Envelope_init_default;
 
