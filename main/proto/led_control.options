@@ -1,68 +1,78 @@
-# nanopb 选项配置文件 for led_control.proto
-# 用于控制生成的 C 代码结构和内存占用
-# 格式: message.field_name option_type:option_value
+# led_control.options
+# 配合 nanopb 生成 C 代码，所有字符串长度和重复字段个数限制严格匹配协议设计
 
-# ==================== 信封层消息配置 ====================
-led_control.Envelope max_size:2048
-led_control.EnvelopeResponse max_size:1024
+# ================================================================
+# 1. 字符串字段：指定 max_size，防止动态分配 / 回调
+# ================================================================
 
-# ==================== 设备信息相关 ====================
-led_control.DeviceInfo max_size:512
-led_control.DeviceInfo.device_name max_length:32
-led_control.DeviceInfo.fw_version max_length:16
-led_control.DeviceInfo.hw_version max_length:16
-led_control.DeviceInfo.manufacturer max_length:32
+# --- 设备信息 ---
+led_control.DeviceInfo.device_name                 max_size:20
+led_control.DeviceInfo.fw_version                  max_size:10
+led_control.DeviceInfo.hw_version                  max_size:10
+led_control.DeviceInfo.manufacturer                max_size:20
 
-led_control.LightConfig max_size:64
-led_control.LightConfig.color_order max_count:5
+# --- 场景名称 ---
+led_control.CustomSceneSummary.name                max_size:24
+led_control.CustomScene.name                       max_size:24
+led_control.SceneSummary.name                      max_size:32
+led_control.GetCustomSceneResponse.name            max_size:24
 
-# ==================== 状态相关 ====================
-led_control.StaticState max_size:64
-led_control.DeviceStatus max_size:256
-led_control.PresetEffect max_size:16
+# --- 模式与预置场景名称 ---
+led_control.ModeInfo.name                          max_size:32
+led_control.PresetSceneSummary.name                max_size:32
 
-# ==================== 自定义场景相关 ====================
-led_control.CustomScene max_size:512
-led_control.CustomScene.name max_length:32
-led_control.CustomScene.segments max_count:10
+# --- 蓝牙名称 ---
+led_control.SetDeviceNameRequest.name              max_size:20
 
-led_control.SegmentConfig max_size:64
+# --- 错误/提示消息（统一长度，覆盖所有 response 中的 error_msg）---
+led_control.SetLightConfigResponse.error_msg       max_size:64
+led_control.SetCustomChannelOrderResponse.error_msg max_size:64
+led_control.SetChannelModeResponse.error_msg       max_size:64
+led_control.SetDeviceNameResponse.error_msg        max_size:64
+led_control.SceneOperationResponse.error_msg       max_size:64
+led_control.GetCustomSceneResponse.error_msg       max_size:64
+led_control.OTAResponse.error_msg                  max_size:64
+led_control.EnvelopeResponse.error_msg             max_size:64
 
-led_control.SceneSummary max_size:64
-led_control.SceneSummary.name max_length:32
+# ================================================================
+# 2. 重复字段：限制最大元素个数，使用静态数组
+# ================================================================
 
-led_control.ListScenesResponse.scenes max_count:32
+# 硬件颜色顺序，固定 5 个元素，未使用通道填 255
+led_control.LightConfig.color_order                max_count:5 fixed_count:true
+led_control.SetCustomChannelOrderRequest.order     max_count:5 fixed_count:true
 
-# ==================== OTA 相关 ====================
-led_control.OTAStartParams max_size:32
-led_control.OTADataParams max_size:1024
-led_control.OTADataParams.chunk max_size:512
-led_control.OTAResponse max_size:128
-led_control.OTAResponse.error_msg max_length:64
-led_control.OTARequest max_size:1024
+# 自定义场景分段：最多 8 段
+led_control.CustomScene.segments                   max_count:8
+led_control.GetCustomSceneResponse.segments        max_count:8
 
-# ==================== 颜色相关 ====================
-led_control.ColorRGB max_size:12
-led_control.ColorTemperature max_size:8
+# 单个段内的颜色序列：最多 3 个颜色
+led_control.SegmentConfig.colors                   max_count:3
 
-# ==================== 控制请求/响应 ====================
-led_control.SetStaticModeRequest max_size:64
-led_control.SetColorRequest max_size:48
-led_control.SetPresetEffectRequest max_size:24
-led_control.SceneOperationRequest max_size:576
+# 场景列表分页：每页最多 7 个摘要
+led_control.ListScenesResponse.scenes              max_count:7
 
-# ==================== 系统指令 ====================
-led_control.PingRequest max_size:16
-led_control.PingResponse max_size:24
-led_control.FactoryResetRequest max_size:8
-led_control.FactoryResetResponse max_size:16
-led_control.StateNotification max_size:256
+# 支持的模式列表：硬件模式数量有限，设定合理上限
+led_control.GetSupportedModesResponse.modes        max_count:50
 
-# ==================== 响应类型配置 ====================
-led_control.SetLightConfigResponse.error_msg max_length:64
-led_control.SetCustomChannelOrderResponse.error_msg max_length:64
-led_control.SetChannelModeResponse.error_msg max_length:64
-led_control.SceneOperationResponse.error_msg max_length:64
-led_control.OTAResponse.error_msg max_length:64
+# 预置场景列表：固件内置场景数量，设定上限
+led_control.GetPresetScenesResponse.scenes         max_count:100
 
-led_control.IcScanResult max_size:8
+# ================================================================
+# 3. bytes 字段：OTA 数据块大小限制，保证 BLE MTU 兼容
+# ================================================================
+led_control.OTADataParams                          max_size:512
+led_control.OTADataParams.chunk                    max_size:480
+led_control.OTARequest                             max_size:1024
+led_control.OTAStartParams                         max_size:32
+led_control.OTAResponse                            max_size:128
+led_control.Envelope                               max_size:2048
+led_control.EnvelopeResponse                       max_size:1024
+
+# ================================================================
+# 4. 其他可选优化（当前已足够，可按需启用）
+# ================================================================
+# 若希望完全消除动态内存分配，可以为顶层信封设置 max_size，
+# 但需要仔细计算所有 oneof 分支的最大编码尺寸，通常不必要。
+# led_control.Envelope                             max_size:256
+# led_control.EnvelopeResponse                     max_size:256

@@ -1,21 +1,36 @@
 syntax = "proto3";
+
 package led_control;
 
 // ================================================================
-//  协议版本: 2
+// 协议版本: 3.0 (针对不分包策略优化)
 //  适用场景: BLE / Wi-Fi 灯控设备，ESP32 固件 ↔ 手机 App
 //  设计原则:
-//    1. 信封(Envelope)模式 — 所有消息收发统一走 Envelope 包装，
-//       嵌入式侧只需一个解析入口，降低内存开销。
-//    2. 读写分离 — 查询、配置、控制、OTA 分类清晰，便于固件分模块处理。
-//    3. 粗细兼顾 — 提供细粒度指令(SetOnOff / SetBrightness / SetColor)
-//       和批量设置(SetStaticMode)，App 可按场景选用。
-//    4. OTA 完整生命周期 — START → DATA(分块) → COMPLETE/ABORT，
-//       每一步都有应答，支持固件侧断点续传。
-//    5. 向前兼容 — oneof + 预留枚举值保证新增功能不破坏旧设备解析。
+//    1. 信封(Envelope)模式 — 所有消息收发统一走 Envelope 包装
+//    2. 读写分离 — 查询、配置、控制、OTA 分类清晰
+//    3. 粗细兼顾 — 提供细粒度指令和批量设置
+//    4. OTA 完整生命周期 — START → DATA → COMPLETE/ABORT
+//    5. 向前兼容 — oneof + 预留枚举值保证兼容性
+//  新增设计原则 (v2.0):
+//    6. 不分包策略 — 所有消息编码后 ≤ 180 字节，兼容 iOS/Android MTU
+//    7. 状态驱动 UI — APP UI 更新依赖 StateNotification
+//    8. 增量更新 — 控制操作后只推送变化字段，减少数据传输
+//    9. 分页查询 — 大数据集通过分页获取，避免单次响应过大
+//   10. 轻量级摘要 — 状态通知中使用摘要而非完整数据
+//  新增设计原则 (v3.0):
+//    1. APP 仅感知 RGB 颜色和色温，硬件通道数由固件自适应
+//    2. 效果/场景使用通用 ID，通过查询接口获取列表，避免硬编码
+//    3. 自定义场景支持多段，每段独立模式、颜色、速度
+//    4. 新增设置蓝牙名称
+//    5. 新增收藏功能：CustomScene 和 SceneSummary 增加 favorite 字段
+//    6. 新增 SetDeviceNameRequest 用于修改蓝牙名称
+//    7. 修正 SetPresetEffectRequest 使用 scene_id
+//    8. 预置场景亮度同步：PresetEffect 和 PresetEffectPatch 增加 brightness 字段
 // ================================================================
 
-// ---------- 枚举定义 ----------
+// ================================================================
+// 基础枚举
+// ================================================================
 
 // 设备类型：描述灯带驱动方式和通道数
 enum DeviceType {
@@ -30,9 +45,9 @@ enum DeviceType {
 
 // 颜色模式：当前静态输出是 RGB 还是色温（CCT）
 enum ColorMode {
-    COLOR_MODE_RGB = 0;  // 仅RGB通道工作
-	COLOR_MODE_CCT = 1;  // 仅白光/色温通道工作
-	COLOR_MODE_MIXED = 2; // RGB与白光同时工作(仅RGBW/RGBCCT硬件支持)
+    COLOR_MODE_RGB = 0;   // 仅RGB通道工作
+    COLOR_MODE_CCT = 1;   // 仅白光/色温通道工作
+    COLOR_MODE_MIXED = 2; // RGB与白光同时工作(仅RGBW/RGBCCT硬件支持)
 }
 
 // 物理输出端口的工作模式
@@ -42,30 +57,14 @@ enum ChannelMode {
     CHANNEL_IC   = 2;  // 作为 IC 数据帧中的一个通道
 }
 
-// 预置动态效果列表
-enum DynamicEffect {
-    EFFECT_NONE           = 0;   // 无效果 / 停止
-    EFFECT_BREATH         = 1;   // 呼吸灯
-    EFFECT_RAINBOW        = 2;   // 彩虹渐变
-    EFFECT_COLOR_WIPE     = 3;   // 色彩逐点填充
-    EFFECT_THEATER_CHASE  = 4;   // 剧院追逐
-    EFFECT_COMET          = 5;   // 流星拖尾
-    EFFECT_FIRE           = 6;   // 火焰模拟
-    EFFECT_TWINKLE        = 7;   // 随机闪烁
-    EFFECT_FLOWING        = 8;   // 流水灯
-    EFFECT_BREATHE_MULTI  = 9;   // 多色呼吸
-    // 10-99 预留给后续增加的效果
+// 设备当前所处的运行模式
+enum RunMode {
+  MODE_UNKNOWN = 0;
+  MODE_STATIC = 1;      // 静态模式
+  MODE_PRESET = 2;      // 预置动态场景
+  MODE_CUSTOM = 3;      // 自定义场景
 }
 
-// 自定义场景中单个段内的特效模式
-enum SegmentEffect {
-    SEGMENT_STATIC       = 0;  // 静态颜色
-    SEGMENT_BREATH       = 1;  // 呼吸
-    SEGMENT_FLOW_FORWARD = 2;  // 向前流动
-    // 可根据需要扩展
-}
-
-// 统一错误码
 enum ErrorCode {
     OK                 = 0;   // 成功
     ERR_UNKNOWN        = 1;   // 未知错误
@@ -83,7 +82,9 @@ enum ErrorCode {
     ERR_OTA_WRITE_FLASH     = 104;  // 写 Flash 失败
 }
 
-// ---------- 基础数据类型 ----------
+// ================================================================
+// 基础数据类型
+// ================================================================
 
 // RGB 颜色值
 message ColorRGB {
@@ -97,7 +98,17 @@ message ColorTemperature {
     uint32 temperature_k = 1;  // 色温值，单位开尔文，通常 2000 - 7000 K
 }
 
-// ---------- 设备信息 & 硬件配置 ----------
+
+// 通用颜色（用于自定义场景段，可选 RGB 或色温）
+message SceneColor {
+    oneof color {
+        ColorRGB rgb = 1;
+        ColorTemperature cct = 2;
+    }
+}
+// ================================================================
+// 硬件配置与设备信息
+// ================================================================
 
 // 硬件配置（可变，掉电保存）
 message LightConfig {
@@ -112,13 +123,13 @@ message LightConfig {
 
 // 设备只读属性，固件编译时确定
 message DeviceInfo {
-    string device_name      = 1;   // 蓝牙广播名 / 设备标识
-    string fw_version       = 2;   // 固件版本，如 "2.1.0"
-    string hw_version       = 3;   // 硬件版本
-    string manufacturer     = 4;   // 制造商
-    DeviceType device_type  = 5;   // 当前硬件类型（冗余，方便不拉取 config 时查看）
+    string device_name      = 1;   // 蓝牙广播名 / 设备标识（最大 20 字节）
+    string fw_version       = 2;   // 固件版本，如 "2.1.0"（最大 10 字节）
+    string hw_version       = 3;   // 硬件版本（最大 10 字节）
+    string manufacturer     = 4;   // 制造商（最大 20 字节）
+    DeviceType device_type  = 5;   // 当前硬件类型
     uint32 led_count        = 6;   // 当前生效的灯珠数
-    uint32 max_led_count    = 7;   // 固件支持的最大灯珠数（用于 App 端输入校验）
+    uint32 max_led_count    = 7;   // 固件支持的最大灯珠数
     uint32 max_rgb_brightness   = 8;   // RGB 通道最大亮度值（如 255）
     uint32 max_white_brightness = 9;   // 白光通道最大亮度值
     uint32 min_color_temp_k     = 10;  // 支持的最低色温（K）
@@ -126,81 +137,149 @@ message DeviceInfo {
     uint32 max_custom_scenes    = 12;  // 可存储的自定义场景数量上限
 }
 
-// ---------- 设备运行状态 ----------
+// ================================================================
+// 设备运行状态
+// ================================================================
 
-// 静态模式下的状态（当处于静态发光时有效）
+// 静态模式下的状态
 message StaticState {
     bool power = 1;                  // 总开关
     uint32 brightness = 2;           // 全局亮度 0 - 100
-    // App应根据此字段决定高亮RGB控件还是色温控件
-	ColorMode color_mode = 3;
+    ColorMode color_mode = 3;        // App应根据此字段决定高亮RGB控件还是色温控件
   
-	// 当color_mode为RGB或MIXED时有效
-	ColorRGB rgb = 4;
+    ColorRGB rgb = 4;                // 当color_mode为RGB或MIXED时有效
+    ColorTemperature cct = 5;        // 当color_mode为CCT或MIXED时有效
   
-	// 当color_mode为CCT或MIXED时有效
-	ColorTemperature cct = 5;
-  
-	// 【新增】独立白光亮度 0-100
-	// 仅RGBW/RGBCCT设备有效，RGB设备始终为0
-	// 解决"切到白光模式后亮度突变"的体验问题
-	optional uint32 white_brightness = 6;
+    // 独立白光亮度 0-100
+    // 仅RGBW/RGBCCT设备有效，RGB设备始终为0
+    optional uint32 white_brightness = 6;
 }
 
 // 预置动态场景运行参数
 message PresetEffect {
-    DynamicEffect scene_id = 1;  // 预置场景 ID
-    uint32 speed = 2;            // 运行速度 1 - 100
+    uint32 scene_id = 1;             // 预置场景 ID（由 GetPresetScenes 查询获得）
+    uint32 speed = 2;                // 速度 1-100
+    optional uint32 brightness = 3;  // 亮度 0-100（不填则使用全局亮度）
 }
 
-// 自定义场景中的一个段
+// 自定义场景摘要（状态通知用，避免传输大量segments数据）
+message CustomSceneSummary {
+    uint32 scene_id = 1;        // 场景唯一 ID
+    optional string name = 2;   // 场景名称（最长24字节）,首次通知时可携带，后续可省略
+    uint32 segment_count = 3;   // 分段数量（不包含具体segments）
+    uint32 global_speed = 4;    // 全局速度
+    optional bool favorite = 5;     // 是否为收藏场景
+}
+
+// ---------- 通用分段与自定义场景 ----------
+
 message SegmentConfig {
-    uint32 start_index = 1;  // 起始 LED 索引（0-based）
-    uint32 end_index = 2;    // 结束 LED 索引（包含）
-    oneof mode {
-        ColorRGB solid_color = 3;  // 本段为静态颜色
-        SegmentEffect effect = 4;  // 本段为动态效果
-    }
+    uint32 start_index = 1;            // 起始 LED 索引（含）
+    uint32 end_index = 2;              // 结束 LED 索引（含）
+    uint32 mode = 3;                   // 效果模式 ID（由 GetSupportedModes 返回）
+    repeated SceneColor colors = 4;    // 最多 3 个，每个可以是 RGB 或色温
+    uint32 speed = 5;                  // 段内速度 1-100（0 表示使用全局速度）
+
+    // 段级可选参数
+    optional uint32 brightness = 6;    // 段独立亮度 0-100（不填则跟随全局亮度）
+    optional bool reverse = 7;         // 是否反向播放效果
 }
 
 // 用户自定义的完整场景定义
+// 注意：为确保 BLE MTU 兼容性，请遵守以下限制：
+//   - name 不超过 24 字节
+//   - segment_count 不超过 8
+//   - 总编码大小不超过 180 字节
 message CustomScene {
-    uint32 scene_id = 1;               // 场景唯一 ID（0 - 255）
-    string name = 2;                   // 场景名称（最长32字节，UTF-8）
-    uint32 segment_count = 3;          // 分段数目
-    repeated SegmentConfig segments = 4;  // 分段列表（最多 10 段）
-    uint32 global_speed = 5;           // 全局速度 1 - 100
-    // 注意：亮度由全局统一控制，不包含在自定义场景内
+    uint32 scene_id = 1;               // 场景唯一 ID，SAVE 时 APP 不填，设备分配
+    optional string name = 2;          // 场景名称（最长24字节，固件侧截断）
+    uint32 segment_count = 3;          // 分段数（最大 8）
+    repeated SegmentConfig segments = 4; // 分段列表（最多 8 段）
+    uint32 global_speed = 5;           // 默认速度 1-100
+
+    // 收藏相关字段
+    optional bool favorite = 6;        // 是否收藏（SAVE 时设置）
+    optional uint32 preset_scene_id = 7; // 若引用预置场景，填写其 ID，此时可忽略 segments
 }
 
-// 设备完整状态快照（用于同步）
-// 使用 oneof current_effect 表达当前运行模式（三选一）
+// ---------- 模式与预置查询 ----------
+
+// 效果模式元数据
+message ModeInfo {
+    uint32 id = 1;                     // 模式 ID
+    string name = 2;                   // 模式名称
+    uint32 min_colors = 3;             // 最少颜色数（0-3）
+    uint32 max_colors = 4;             // 最多颜色数（0-3）
+    // 可扩展分类、描述等
+}
+
+message GetSupportedModesRequest {}
+message GetSupportedModesResponse {
+    repeated ModeInfo modes = 1;
+}
+
+message PresetSceneSummary {
+    uint32 id = 1;
+    string name = 2;
+}
+
+message GetPresetScenesRequest {}
+message GetPresetScenesResponse {
+    repeated PresetSceneSummary scenes = 1;
+}
+
+// 完整设备状态
 message DeviceStatus {
-    oneof current_effect {
-        StaticState static_state = 1;    // 静态模式
-        PresetEffect preset_effect = 2;  // 预置动态场景
-        CustomScene custom_scene = 3;    // 自定义场景
-    }
+    // 当前运行模式，用于UI快速判断高亮哪个Tab
+    RunMode current_mode = 1;
+
+    // 各模式的参数独立存在，不再互斥
+    // 即使当前是静态模式，preset_effect 里也保留着上次运行时的速度和效果ID
+    StaticState static_state = 2;
+    PresetEffect preset_effect = 3;
+    
+    // 【优化】使用轻量级的场景摘要，而非完整场景定义
+    // 如果需要完整场景（包括segments），使用 GetCustomSceneRequest 单独获取
+    CustomSceneSummary custom_scene_summary = 4;
 }
 
-// ---------- 查询与配置 ----------
+// 场景摘要（用于列表显示）
+message SceneSummary {
+    uint32 id = 1;    // 场景 ID
+    optional string name = 2;  // 场景名称（最长32字节）
+    bool favorite = 3;                 // 是否被收藏
+}
 
-// 获取设备信息（启动时首条请求，一次返回设备能力、配置和状态）
-message GetDeviceInfoRequest {}
+// ================================================================
+// 1. 查询与配置 (需要明确应答)
+// ================================================================
+
+// ---------- 查询设备信息 ----------
+// 【优化】支持按需查询，避免一次性返回过多数据导致超过MTU
+message GetDeviceInfoRequest {
+    enum InfoType {
+        INFO_BASIC = 0;      // 基本信息（名称、版本等）~80-100字节
+        INFO_CONFIG = 1;     // 硬件配置 ~20-40字节
+        INFO_STATUS = 2;     // 当前状态 ~110-130字节
+        INFO_ALL = 3;        // 全部信息 ~220-280字节（可能超过MTU，慎用）
+    }
+    InfoType type = 1;       // 查询类型，默认 INFO_ALL
+}
+
 message GetDeviceInfoResponse {
-    DeviceInfo info     = 1;  // 只读信息
-    LightConfig config  = 2;  // 当前硬件配置
-    DeviceStatus status = 3;  // 运行时状态
+    GetDeviceInfoRequest.InfoType type = 1;       // 对应的查询类型
+    
+    optional DeviceInfo info = 10;      // 基本信息
+    optional LightConfig config = 11;   // 硬件配置
+    optional DeviceStatus status = 12;  // 当前状态
 }
 
 // 修改硬件配置
-message SetLightConfigRequest {
-    LightConfig config = 1;
-}
+message SetLightConfigRequest { LightConfig config = 1; }
 message SetLightConfigResponse {
-    ErrorCode error            = 1;  // 操作结果
-    string error_msg           = 2;  // 错误原因描述
-    bool restart_required      = 3;  // 是否需要重启设备才能生效
+    ErrorCode error = 1;
+    string error_msg = 2;
+    bool restart_required = 3;
 }
 
 // 设置自定义颜色通道顺序（覆盖常见预设）
@@ -233,69 +312,22 @@ message SetChannelModeResponse {
     string error_msg    = 2;
 }
 
-// ---------- 灯光控制 ----------
-
-// 总开关
-message SetOnOffRequest {
-    bool power = 1;  // true = 开，false = 关
-}
-message SetOnOffResponse {
-    ErrorCode error = 1;
+// 设置蓝牙的名称
+message SetDeviceNameRequest {
+    string name = 1;  // 最大 20 字节，设备端截断
 }
 
-// 全局亮度调节
-message SetBrightnessRequest {
-    uint32 brightness = 1;  // 亮度 0 - 100
-}
-message SetBrightnessResponse {
-    ErrorCode error = 1;
+message SetDeviceNameResponse {
+    ErrorCode error  = 1;
+    string error_msg = 2;
 }
 
-// 设置颜色 / 色温
-message SetColorRequest {
-    ColorMode mode = 1;              // 目标颜色模式
-    ColorRGB rgb = 2;           // mode=RGB/MIXED时使用
-	ColorTemperature cct = 3;   // mode=CCT/MIXED时使用
-	optional uint32 brightness = 4;       // 可选：同步修改全局亮度
-	optional uint32 white_brightness = 5; // 【新增】可选：同步修改白光亮度
-}
-message SetColorResponse {
-    ErrorCode error = 1;
-}
-
-// 批量静态模式设置（一次性下发开关、亮度、颜色）
-message SetStaticModeRequest {
-    bool power = 1;                // 开关
-    uint32 brightness = 2;         // 亮度 0 - 100
-    ColorMode mode = 3;            // 颜色模式
-    oneof color {
-        ColorRGB rgb = 4;          // RGB 颜色
-        ColorTemperature cct = 5;  // 色温值
-    }
-	// 【新增】独立白光亮度，仅当device_type支持白光时有效
-    // 若未填写，固件应保持上次白光亮度不变
-    optional uint32 white_brightness = 6;
-}
-message SetStaticModeResponse {
-    ErrorCode error = 1;
-}
-
-// ---------- 动态效果 ----------
-
-// 启动一个预置动态效果
-message SetPresetEffectRequest {
-    DynamicEffect effect = 1;  // 效果 ID
-    uint32 speed = 2;          // 速度 1 - 100
-    uint32 brightness = 3;     // 全局亮度 0 - 100（本次效果运行时的亮度）
-}
-message SetPresetEffectResponse {
-    ErrorCode error = 1;
-}
-
-// ---------- 自定义场景操作 ----------
+// ================================================================
+// 2. 自定义场景管理
+// ================================================================
 
 enum SceneOp {
-    SCENE_OP_SAVE   = 0;  // 保存场景到设备
+    SCENE_OP_SAVE   = 0;   // 保存（新建或更新，包括仅更新收藏标记）
     SCENE_OP_DELETE = 1;  // 删除已保存的场景
     SCENE_OP_RUN    = 2;  // 运行场景（可运行已保存的或临时场景）
     SCENE_OP_STOP   = 3;  // 停止自定义场景，回到静态模式
@@ -303,36 +335,107 @@ enum SceneOp {
 
 message SceneOperationRequest {
     SceneOp op = 1;                    // 操作类型
-    uint32 scene_id = 2;               // 目标场景 ID
-    optional CustomScene scene = 3;    // 场景完整定义（SAVE / RUN 临时场景时携带）
+    uint32 scene_id = 2;               // DELETE 或 RUN 或更新时必需，新建时可留空
+    optional CustomScene scene = 3;    // SAVE 时携带
 }
 message SceneOperationResponse {
-    ErrorCode error     = 1;
-    string error_msg    = 2;
+    ErrorCode error  = 1;
+    string error_msg = 2;
+    optional uint32 scene_id = 3;      // SAVE 成功时返回新分配的场景 ID
+}
+
+// 【新增】获取单个场景的完整定义
+// 用途：APP 编辑场景时需要获取完整的 segments 信息
+message GetCustomSceneRequest {
+    uint32 scene_id = 1;               // 要获取的场景 ID
+    
+    // 【可选】分页参数，用于超多 segments 的场景（虽然限制了最多8个，但保留扩展性）
+    optional uint32 segment_offset = 2;  // 起始 segment 索引，默认 0
+    optional uint32 segment_limit = 3;   // 每次获取数量，默认 8，最大 8
+}
+
+message GetCustomSceneResponse {
+    ErrorCode error = 1;
+    string error_msg = 2;
+    
+    uint32 scene_id = 3;               // 场景 ID
+    optional string name = 4;          // 场景名称
+    uint32 total_segments = 5;         // 总 segment 数量
+    uint32 global_speed = 6;           // 全局速度
+    
+    // 返回的 segments（可能是全部，也可能是部分）
+    repeated SegmentConfig segments = 7;
+    bool has_more = 8;
+    optional bool favorite = 9;        // 返回场景的收藏标记
 }
 
 // 获取设备上已保存的场景列表
-message ListScenesRequest {}
+// 【优化】支持分页，避免场景过多时响应过大
+message ListScenesRequest {
+    optional uint32 offset = 1;        // 起始索引，默认 0
+    optional uint32 limit = 2;         // 每次获取数量，建议 5，最大 7
+}
+
 message ListScenesResponse {
     repeated SceneSummary scenes = 1;
+    uint32 total_count = 2;
+    bool has_more = 3;
 }
 
-message SceneSummary {
-    uint32 id = 1;    // 场景 ID
-    string name = 2;  // 场景名称
+// ================================================================
+// 3. 灯光控制 (无需应答，依赖异步通知)
+// ================================================================
+
+// 总开关
+message SetOnOffRequest { bool power = 1; }
+
+
+// 全局亮度
+message SetBrightnessRequest { uint32 brightness = 1; }
+
+
+// 白光亮度控制：只修改 white_brightness 字段
+message SetWhiteBrightnessRequest { uint32 white_brightness = 1; }
+
+// 颜色/色温
+message SetColorRequest {
+    ColorMode mode = 1;
+    ColorRGB rgb = 2;
+    ColorTemperature cct = 3;
+    optional uint32 brightness = 4;
+    optional uint32 white_brightness = 5;
 }
 
-// ---------- 状态推送（设备主动上报） ----------
-// 当设备状态发生变化（如物理按键触发）时，固件主动推送此消息。
-// 为简化实现，这里直接推送完整的 DeviceStatus；也可按 changed_fields 精细控制。
-message StateNotification {
-    uint32 changed_fields = 1;          // 预留位掩码，暂不使用
-    optional StaticState static_state = 2;
-    optional PresetEffect preset_effect = 3;
-    optional CustomScene custom_scene = 4;
+
+// 批量静态模式设置（进入或配置静态模式的唯一指令）
+message SetStaticModeRequest {
+  bool power = 1;           // 开关灯
+  uint32 brightness = 2;    // RGB通道的全局亮度 (0-100)
+  ColorMode mode = 3;       // 颜色模式：RGB / CCT / MIXED
+
+  // 根据 mode 字段选择颜色值
+  oneof color {
+    ColorRGB rgb = 4;           // mode=RGB/MIXED时使用
+    ColorTemperature cct = 5;   // mode=CCT/MIXED时使用
+  }
+
+  // 【优化】独立白光亮度，仅在 mode=CCT 或 mode=MIXED 时有效
+  // 若未填写，固件应保持上次白光亮度不变
+  optional uint32 white_brightness = 6;
 }
 
-// ---------- OTA 固件升级 ----------
+// ---------- 动态效果 ----------
+
+// 动态效果
+message SetPresetEffectRequest {
+    uint32 scene_id = 1;      // 预置场景 ID（由 GetPresetScenes 获得）
+    uint32 speed = 2;         // 1-100
+    uint32 brightness = 3;    // 0-100
+}
+
+// ================================================================
+// 4. OTA 固件升级
+// ================================================================
 
 message OTAStartParams {
     uint32 total_size = 1;  // 固件总字节数
@@ -342,7 +445,7 @@ message OTAStartParams {
 
 message OTADataParams {
     uint32 offset = 1;  // 当前数据块的起始偏移地址
-    bytes chunk = 2;    // 固件数据块
+    bytes chunk = 2;    // 固件数据块，注意：chunk 大小应控制在 MTU 范围内
 }
 
 // OTA 请求信封（使用独立端点时也可直接发送 OTARequest）
@@ -370,11 +473,13 @@ message OTAResponse {
     bool done = 6;               // 传输+校验是否完成
 }
 
-// ---------- 系统指令 ----------
+// ================================================================
+// 5. 系统指令
+// ================================================================
 
 // 保活与延迟测量
 message PingRequest {
-    uint64 client_timestamp = 1;  // App 发送时的毫秒时间戳
+    uint64 client_timestamp = 1;
 }
 message PingResponse {
     uint64 client_timestamp = 1;  // 原样返回
@@ -389,11 +494,58 @@ message FactoryResetResponse {
     ErrorCode error = 1;
 }
 
+
 // ================================================================
-//  信封层 —— 所有报文统一包装
+// 6. 上行数据通道 (核心优化点)
 // ================================================================
-//  App → 固件: 填写 request_id + payload 中的一个请求
-//  固件 → App: 填写 EnvelopeResponse (请求-响应) 或 StateNotification (主动推送)
+
+// 【新增】部分状态更新补丁（用于增量通知）
+message StaticStatePatch {
+    optional bool power = 1;
+    optional uint32 brightness = 2;
+    optional ColorMode color_mode = 3;
+    optional ColorRGB rgb = 4;
+    optional ColorTemperature cct = 5;
+    optional uint32 white_brightness = 6;
+}
+
+message PresetEffectPatch {
+    optional uint32 scene_id = 1;
+    optional uint32 speed = 2;
+    optional uint32 brightness = 3;
+}
+
+message PartialStatusUpdate {
+    optional RunMode current_mode = 1;
+    optional StaticStatePatch static_state_patch = 2;
+    optional PresetEffectPatch preset_effect_patch = 3;
+    optional CustomSceneSummary custom_scene_summary = 4;
+}
+
+// 统一状态通知 (Notify)
+// 用途1：设备状态变更（按键、定时、APP控制后的回显）
+// 用途2：作为控制指令的“异步 ACK”
+message StateNotification {
+    // 关联的命令ID。
+    // - 如果是响应 APP 的控制指令，填入原 Envelope.request_id
+    // - 如果是设备主动上报（如按键），此字段为 0 或不填
+    optional uint32 source_cmd_id = 1; 
+    
+    enum UpdateType {
+        UPDATE_FULL = 0;      // 完整快照
+        UPDATE_PARTIAL = 1;   // 增量更新
+    }
+    UpdateType update_type = 2;
+
+    oneof payload {
+        DeviceStatus full_status = 3;       // 完整状态
+        PartialStatusUpdate partial_update = 4; // 增量状态
+    }
+}
+
+// ================================================================
+// 7. 信封层 —— 所有报文统一包装
+// ================================================================
 
 message Envelope {
     uint32 protocol_version = 1;  // 协议版本号，当前为 2，用于协商
@@ -402,23 +554,28 @@ message Envelope {
     oneof payload {
         // ---- 查询 (10-19) ----
         GetDeviceInfoRequest            get_device_info    = 10;
+        GetSupportedModesRequest        get_supported_modes = 11;
+        GetPresetScenesRequest          get_preset_scenes   = 12;
 
         // ---- 配置 (20-29) ----
         SetLightConfigRequest           set_light_config   = 20;
         SetCustomChannelOrderRequest    set_channel_order  = 21;
         ScanIcRequest                   scan_ic            = 22;
         SetChannelModeRequest           set_channel_mode   = 23;
+		SetDeviceNameRequest            set_device_name    = 24;
 
-        // ---- 灯光控制 (30-39) ----
+        // ---- 灯光控制 (30-39) (无 Response，靠 StateNotification 确认) ----
         SetOnOffRequest                 set_on_off         = 30;
         SetBrightnessRequest            set_brightness     = 31;
-        SetColorRequest                 set_color          = 32;
-        SetStaticModeRequest            set_static_mode    = 33;
-        SetPresetEffectRequest          set_preset_effect  = 34;
+        SetWhiteBrightnessRequest       set_white_brightness = 32;
+        SetColorRequest                 set_color          = 33;
+        SetStaticModeRequest            set_static_mode    = 34;
+        SetPresetEffectRequest          set_preset_effect  = 35;
 
         // ---- 自定义场景 (40-49) ----
         SceneOperationRequest           scene_op           = 40;
         ListScenesRequest               list_scenes        = 41;
+        GetCustomSceneRequest           get_custom_scene   = 42;
 
         // ---- OTA (50-59) ----
         OTARequest                      ota                = 50;
@@ -426,39 +583,38 @@ message Envelope {
         // ---- 系统 (60-69) ----
         PingRequest                     ping               = 60;
         FactoryResetRequest             factory_reset      = 61;
-
-        // ---- 设备 → App ----
-        EnvelopeResponse                response           = 80;  // 统一响应
-        StateNotification               state_notify       = 90;  // 状态推送
     }
 }
 
-// 统一响应信封
+// 统一响应信封 (Notify)
 message EnvelopeResponse {
-    uint32 request_id = 1;     // 对应的请求 ID
-    ErrorCode error = 2;       // 操作结果（OK 表示成功）
-    string error_msg = 3;      // 错误时的详细描述
+    uint32 request_id = 1;
+    ErrorCode error = 2;
+    string error_msg = 3;
 
-    // 根据请求类型，返回对应的响应体
     oneof result {
-        GetDeviceInfoResponse         device_info_result    = 10;
-        SetLightConfigResponse        set_light_config      = 11;
-        SetCustomChannelOrderResponse set_channel_order     = 12;
-        SetChannelModeResponse        set_channel_mode_result = 13;
-        IcScanResult                  ic_scan_result        = 14;
-
-        SetOnOffResponse              set_on_off_result     = 20;
-        SetBrightnessResponse         set_brightness_result = 21;
-        SetColorResponse              set_color_result      = 22;
-        SetStaticModeResponse         set_static_result     = 23;
-        SetPresetEffectResponse       set_preset_result     = 24;
-
-        SceneOperationResponse        scene_op_result       = 30;
-        ListScenesResponse            list_scenes_result    = 31;
-
-        OTAResponse                   ota_result            = 40;
-
-        PingResponse                  ping_result           = 50;
-        FactoryResetResponse          factory_reset_result  = 51;
+        // 查询响应
+        GetDeviceInfoResponse device_info_result = 10;
+        GetSupportedModesResponse       supported_modes_result = 11;
+        GetPresetScenesResponse         preset_scenes_result   = 12;
+        
+        // 配置响应
+        SetLightConfigResponse set_light_config = 20;
+        SetCustomChannelOrderResponse set_channel_order = 21;
+        IcScanResult ic_scan_result = 22;
+        SetChannelModeResponse set_channel_mode_result = 23;
+		SetDeviceNameResponse  set_device_name_result = 24;
+        
+        // 场景响应
+        SceneOperationResponse scene_op_result = 40;
+        ListScenesResponse list_scenes_result = 41;
+        GetCustomSceneResponse get_custom_scene_result = 42;
+        
+        // OTA 响应
+        OTAResponse ota_result = 50;
+        
+        // 系统响应
+        PingResponse ping_result = 60;
+        FactoryResetResponse factory_reset_result = 61;
     }
 }

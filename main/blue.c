@@ -125,9 +125,11 @@ static const char *phy_str(uint8_t phy)
 
 static int ble_gap_event(struct ble_gap_event *event, void *arg)
 {
+    int rc;
     switch (event->type) {
 
     case BLE_GAP_EVENT_CONNECT:
+        
         if (event->connect.status == 0) {
             uint16_t h = event->connect.conn_handle;
             struct ble_gap_conn_desc d;
@@ -135,6 +137,28 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
             if (ble_gap_conn_find(h, &d) == 0)
                 ESP_LOGI(TAG, "  间隔: %u x 1.25ms, MTU: %u",
                          d.conn_itvl, ble_att_mtu(h));
+            struct ble_gap_upd_params params = {
+                .itvl_min = 0x0010, // 30ms (0x0018 * 1.25ms)
+                .itvl_max = 0x0028, // 50ms (0x0028 * 1.25ms)
+                .latency = 0,
+                .supervision_timeout = 0x0190, // 4s
+                .min_ce_len = 0,
+                .max_ce_len = 0,
+            };
+
+            rc = ble_gap_update_params(event->connect.conn_handle, &params);
+            if (rc != 0) {
+              ESP_LOGW(TAG, "更新连接参数失败: %d", rc);
+            } else {
+              ESP_LOGD(TAG, "请求更新连接参数");
+            }
+
+            rc = ble_gattc_exchange_mtu(event->connect.conn_handle, NULL, NULL);
+            if (rc == 0) {
+              ESP_LOGI(TAG, "已发起MTU交换请求");
+            } else {
+              ESP_LOGW(TAG, "发起MTU交换失败 rc=%d", rc);
+            }
             envelope_add_peer(h);
             adv_start();
         }

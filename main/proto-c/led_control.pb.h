@@ -35,28 +35,14 @@ typedef enum _led_control_ChannelMode {
     led_control_ChannelMode_CHANNEL_IC = 2 /* 作为 IC 数据帧中的一个通道 */
 } led_control_ChannelMode;
 
-/* 预置动态效果列表 */
-typedef enum _led_control_DynamicEffect {
-    led_control_DynamicEffect_EFFECT_NONE = 0, /* 无效果 / 停止 */
-    led_control_DynamicEffect_EFFECT_BREATH = 1, /* 呼吸灯 */
-    led_control_DynamicEffect_EFFECT_RAINBOW = 2, /* 彩虹渐变 */
-    led_control_DynamicEffect_EFFECT_COLOR_WIPE = 3, /* 色彩逐点填充 */
-    led_control_DynamicEffect_EFFECT_THEATER_CHASE = 4, /* 剧院追逐 */
-    led_control_DynamicEffect_EFFECT_COMET = 5, /* 流星拖尾 */
-    led_control_DynamicEffect_EFFECT_FIRE = 6, /* 火焰模拟 */
-    led_control_DynamicEffect_EFFECT_TWINKLE = 7, /* 随机闪烁 */
-    led_control_DynamicEffect_EFFECT_FLOWING = 8, /* 流水灯 */
-    led_control_DynamicEffect_EFFECT_BREATHE_MULTI = 9 /* 多色呼吸 */
-} led_control_DynamicEffect;
+/* 设备当前所处的运行模式 */
+typedef enum _led_control_RunMode {
+    led_control_RunMode_MODE_UNKNOWN = 0,
+    led_control_RunMode_MODE_STATIC = 1, /* 静态模式 */
+    led_control_RunMode_MODE_PRESET = 2, /* 预置动态场景 */
+    led_control_RunMode_MODE_CUSTOM = 3 /* 自定义场景 */
+} led_control_RunMode;
 
-/* 自定义场景中单个段内的特效模式 */
-typedef enum _led_control_SegmentEffect {
-    led_control_SegmentEffect_SEGMENT_STATIC = 0, /* 静态颜色 */
-    led_control_SegmentEffect_SEGMENT_BREATH = 1, /* 呼吸 */
-    led_control_SegmentEffect_SEGMENT_FLOW_FORWARD = 2 /* 向前流动 */
-} led_control_SegmentEffect;
-
-/* 统一错误码 */
 typedef enum _led_control_ErrorCode {
     led_control_ErrorCode_OK = 0, /* 成功 */
     led_control_ErrorCode_ERR_UNKNOWN = 1, /* 未知错误 */
@@ -75,11 +61,18 @@ typedef enum _led_control_ErrorCode {
 } led_control_ErrorCode;
 
 typedef enum _led_control_SceneOp {
-    led_control_SceneOp_SCENE_OP_SAVE = 0, /* 保存场景到设备 */
+    led_control_SceneOp_SCENE_OP_SAVE = 0, /* 保存（新建或更新，包括仅更新收藏标记） */
     led_control_SceneOp_SCENE_OP_DELETE = 1, /* 删除已保存的场景 */
     led_control_SceneOp_SCENE_OP_RUN = 2, /* 运行场景（可运行已保存的或临时场景） */
     led_control_SceneOp_SCENE_OP_STOP = 3 /* 停止自定义场景，回到静态模式 */
 } led_control_SceneOp;
+
+typedef enum _led_control_GetDeviceInfoRequest_InfoType {
+    led_control_GetDeviceInfoRequest_InfoType_INFO_BASIC = 0, /* 基本信息（名称、版本等）~80-100字节 */
+    led_control_GetDeviceInfoRequest_InfoType_INFO_CONFIG = 1, /* 硬件配置 ~20-40字节 */
+    led_control_GetDeviceInfoRequest_InfoType_INFO_STATUS = 2, /* 当前状态 ~110-130字节 */
+    led_control_GetDeviceInfoRequest_InfoType_INFO_ALL = 3 /* 全部信息 ~220-280字节（可能超过MTU，慎用） */
+} led_control_GetDeviceInfoRequest_InfoType;
 
 typedef enum _led_control_OTARequest_Cmd {
     led_control_OTARequest_Cmd_CMD_START = 0, /* 开始升级，携带 OTAStartParams */
@@ -87,6 +80,11 @@ typedef enum _led_control_OTARequest_Cmd {
     led_control_OTARequest_Cmd_CMD_COMPLETE = 2, /* 传输完成，请求校验并切换分区 */
     led_control_OTARequest_Cmd_CMD_ABORT = 3 /* 中止升级 */
 } led_control_OTARequest_Cmd;
+
+typedef enum _led_control_StateNotification_UpdateType {
+    led_control_StateNotification_UpdateType_UPDATE_FULL = 0, /* 完整快照 */
+    led_control_StateNotification_UpdateType_UPDATE_PARTIAL = 1 /* 增量更新 */
+} led_control_StateNotification_UpdateType;
 
 /* Struct definitions */
 /* RGB 颜色值 */
@@ -101,6 +99,15 @@ typedef struct _led_control_ColorTemperature {
     uint32_t temperature_k; /* 色温值，单位开尔文，通常 2000 - 7000 K */
 } led_control_ColorTemperature;
 
+/* 通用颜色（用于自定义场景段，可选 RGB 或色温） */
+typedef struct _led_control_SceneColor {
+    pb_size_t which_color;
+    union {
+        led_control_ColorRGB rgb;
+        led_control_ColorTemperature cct;
+    } color;
+} led_control_SceneColor;
+
 /* 硬件配置（可变，掉电保存） */
 typedef struct _led_control_LightConfig {
     led_control_DeviceType device_type; /* 灯带类型 */
@@ -108,20 +115,19 @@ typedef struct _led_control_LightConfig {
  索引固定：0=红, 1=绿, 2=蓝, 3=暖白, 4=冷白。
  值代表该通道在 IC 数据中的字节位置（0~4），255 表示无此通道。
  仅 IC 类型灯带有效；PWM 类型忽略。 */
-    pb_size_t color_order_count;
     uint32_t color_order[5];
     uint32_t led_count; /* 灯带上的 LED / IC 数量 */
 } led_control_LightConfig;
 
 /* 设备只读属性，固件编译时确定 */
 typedef struct _led_control_DeviceInfo {
-    char device_name[33]; /* 蓝牙广播名 / 设备标识 */
-    char fw_version[17]; /* 固件版本，如 "2.1.0" */
-    char hw_version[17]; /* 硬件版本 */
-    char manufacturer[33]; /* 制造商 */
-    led_control_DeviceType device_type; /* 当前硬件类型（冗余，方便不拉取 config 时查看） */
+    char device_name[20]; /* 蓝牙广播名 / 设备标识（最大 20 字节） */
+    char fw_version[10]; /* 固件版本，如 "2.1.0"（最大 10 字节） */
+    char hw_version[10]; /* 硬件版本（最大 10 字节） */
+    char manufacturer[20]; /* 制造商（最大 20 字节） */
+    led_control_DeviceType device_type; /* 当前硬件类型 */
     uint32_t led_count; /* 当前生效的灯珠数 */
-    uint32_t max_led_count; /* 固件支持的最大灯珠数（用于 App 端输入校验） */
+    uint32_t max_led_count; /* 固件支持的最大灯珠数 */
     uint32_t max_rgb_brightness; /* RGB 通道最大亮度值（如 255） */
     uint32_t max_white_brightness; /* 白光通道最大亮度值 */
     uint32_t min_color_temp_k; /* 支持的最低色温（K） */
@@ -129,75 +135,143 @@ typedef struct _led_control_DeviceInfo {
     uint32_t max_custom_scenes; /* 可存储的自定义场景数量上限 */
 } led_control_DeviceInfo;
 
-/* 静态模式下的状态（当处于静态发光时有效） */
+/* 静态模式下的状态 */
 typedef struct _led_control_StaticState {
     bool power; /* 总开关 */
     uint32_t brightness; /* 全局亮度 0 - 100 */
-    /* App应根据此字段决定高亮RGB控件还是色温控件 */
-    led_control_ColorMode color_mode;
-    /* 当color_mode为RGB或MIXED时有效 */
+    led_control_ColorMode color_mode; /* App应根据此字段决定高亮RGB控件还是色温控件 */
     bool has_rgb;
-    led_control_ColorRGB rgb;
-    /* 当color_mode为CCT或MIXED时有效 */
+    led_control_ColorRGB rgb; /* 当color_mode为RGB或MIXED时有效 */
     bool has_cct;
-    led_control_ColorTemperature cct;
-    /* 【新增】独立白光亮度 0-100
- 仅RGBW/RGBCCT设备有效，RGB设备始终为0
- 解决"切到白光模式后亮度突变"的体验问题 */
+    led_control_ColorTemperature cct; /* 当color_mode为CCT或MIXED时有效 */
+    /* 独立白光亮度 0-100
+ 仅RGBW/RGBCCT设备有效，RGB设备始终为0 */
     bool has_white_brightness;
     uint32_t white_brightness;
 } led_control_StaticState;
 
 /* 预置动态场景运行参数 */
 typedef struct _led_control_PresetEffect {
-    led_control_DynamicEffect scene_id; /* 预置场景 ID */
-    uint32_t speed; /* 运行速度 1 - 100 */
+    uint32_t scene_id; /* 预置场景 ID（由 GetPresetScenes 查询获得） */
+    uint32_t speed; /* 速度 1-100 */
+    bool has_brightness;
+    uint32_t brightness; /* 亮度 0-100（不填则使用全局亮度） */
 } led_control_PresetEffect;
 
-/* 自定义场景中的一个段 */
+/* 自定义场景摘要（状态通知用，避免传输大量segments数据） */
+typedef struct _led_control_CustomSceneSummary {
+    uint32_t scene_id; /* 场景唯一 ID */
+    bool has_name;
+    char name[24]; /* 场景名称（最长24字节）,首次通知时可携带，后续可省略 */
+    uint32_t segment_count; /* 分段数量（不包含具体segments） */
+    uint32_t global_speed; /* 全局速度 */
+    bool has_favorite;
+    bool favorite; /* 是否为收藏场景 */
+} led_control_CustomSceneSummary;
+
 typedef struct _led_control_SegmentConfig {
-    uint32_t start_index; /* 起始 LED 索引（0-based） */
-    uint32_t end_index; /* 结束 LED 索引（包含） */
-    pb_size_t which_mode;
-    union {
-        led_control_ColorRGB solid_color; /* 本段为静态颜色 */
-        led_control_SegmentEffect effect; /* 本段为动态效果 */
-    } mode;
+    uint32_t start_index; /* 起始 LED 索引（含） */
+    uint32_t end_index; /* 结束 LED 索引（含） */
+    uint32_t mode; /* 效果模式 ID（由 GetSupportedModes 返回） */
+    pb_size_t colors_count;
+    led_control_SceneColor colors[3]; /* 最多 3 个，每个可以是 RGB 或色温 */
+    uint32_t speed; /* 段内速度 1-100（0 表示使用全局速度） */
+    /* 段级可选参数 */
+    bool has_brightness;
+    uint32_t brightness; /* 段独立亮度 0-100（不填则跟随全局亮度） */
+    bool has_reverse;
+    bool reverse; /* 是否反向播放效果 */
 } led_control_SegmentConfig;
 
-/* 用户自定义的完整场景定义 */
+/* 用户自定义的完整场景定义
+ 注意：为确保 BLE MTU 兼容性，请遵守以下限制：
+   - name 不超过 24 字节
+   - segment_count 不超过 8
+   - 总编码大小不超过 180 字节 */
 typedef struct _led_control_CustomScene {
-    uint32_t scene_id; /* 场景唯一 ID（0 - 255） */
-    char name[33]; /* 场景名称（最长32字节，UTF-8） */
-    uint32_t segment_count; /* 分段数目 */
+    uint32_t scene_id; /* 场景唯一 ID，SAVE 时 APP 不填，设备分配 */
+    bool has_name;
+    char name[24]; /* 场景名称（最长24字节，固件侧截断） */
+    uint32_t segment_count; /* 分段数（最大 8） */
     pb_size_t segments_count;
-    led_control_SegmentConfig segments[10]; /* 分段列表（最多 10 段） */
-    uint32_t global_speed; /* 全局速度 1 - 100 */
+    led_control_SegmentConfig segments[8]; /* 分段列表（最多 8 段） */
+    uint32_t global_speed; /* 默认速度 1-100 */
+    /* 收藏相关字段 */
+    bool has_favorite;
+    bool favorite; /* 是否收藏（SAVE 时设置） */
+    bool has_preset_scene_id;
+    uint32_t preset_scene_id; /* 若引用预置场景，填写其 ID，此时可忽略 segments */
 } led_control_CustomScene;
 
-/* 设备完整状态快照（用于同步）
- 使用 oneof current_effect 表达当前运行模式（三选一） */
+/* 效果模式元数据 */
+typedef struct _led_control_ModeInfo {
+    uint32_t id; /* 模式 ID */
+    char name[32]; /* 模式名称 */
+    uint32_t min_colors; /* 最少颜色数（0-3） */
+    uint32_t max_colors; /* 最多颜色数（0-3） */
+} led_control_ModeInfo;
+
+typedef struct _led_control_GetSupportedModesRequest {
+    char dummy_field;
+} led_control_GetSupportedModesRequest;
+
+typedef struct _led_control_GetSupportedModesResponse {
+    pb_size_t modes_count;
+    led_control_ModeInfo modes[50];
+} led_control_GetSupportedModesResponse;
+
+typedef struct _led_control_PresetSceneSummary {
+    uint32_t id;
+    char name[32];
+} led_control_PresetSceneSummary;
+
+typedef struct _led_control_GetPresetScenesRequest {
+    char dummy_field;
+} led_control_GetPresetScenesRequest;
+
+typedef struct _led_control_GetPresetScenesResponse {
+    pb_size_t scenes_count;
+    led_control_PresetSceneSummary scenes[100];
+} led_control_GetPresetScenesResponse;
+
+/* 完整设备状态 */
 typedef struct _led_control_DeviceStatus {
-    pb_size_t which_current_effect;
-    union {
-        led_control_StaticState static_state; /* 静态模式 */
-        led_control_PresetEffect preset_effect; /* 预置动态场景 */
-        led_control_CustomScene custom_scene; /* 自定义场景 */
-    } current_effect;
+    /* 当前运行模式，用于UI快速判断高亮哪个Tab */
+    led_control_RunMode current_mode;
+    /* 各模式的参数独立存在，不再互斥
+ 即使当前是静态模式，preset_effect 里也保留着上次运行时的速度和效果ID */
+    bool has_static_state;
+    led_control_StaticState static_state;
+    bool has_preset_effect;
+    led_control_PresetEffect preset_effect;
+    /* 【优化】使用轻量级的场景摘要，而非完整场景定义
+ 如果需要完整场景（包括segments），使用 GetCustomSceneRequest 单独获取 */
+    bool has_custom_scene_summary;
+    led_control_CustomSceneSummary custom_scene_summary;
 } led_control_DeviceStatus;
 
-/* 获取设备信息（启动时首条请求，一次返回设备能力、配置和状态） */
+/* 场景摘要（用于列表显示） */
+typedef struct _led_control_SceneSummary {
+    uint32_t id; /* 场景 ID */
+    bool has_name;
+    char name[32]; /* 场景名称（最长32字节） */
+    bool favorite; /* 是否被收藏 */
+} led_control_SceneSummary;
+
+/* ---------- 查询设备信息 ----------
+ 【优化】支持按需查询，避免一次性返回过多数据导致超过MTU */
 typedef struct _led_control_GetDeviceInfoRequest {
-    char dummy_field;
+    led_control_GetDeviceInfoRequest_InfoType type; /* 查询类型，默认 INFO_ALL */
 } led_control_GetDeviceInfoRequest;
 
 typedef struct _led_control_GetDeviceInfoResponse {
+    led_control_GetDeviceInfoRequest_InfoType type; /* 对应的查询类型 */
     bool has_info;
-    led_control_DeviceInfo info; /* 只读信息 */
+    led_control_DeviceInfo info; /* 基本信息 */
     bool has_config;
-    led_control_LightConfig config; /* 当前硬件配置 */
+    led_control_LightConfig config; /* 硬件配置 */
     bool has_status;
-    led_control_DeviceStatus status; /* 运行时状态 */
+    led_control_DeviceStatus status; /* 当前状态 */
 } led_control_GetDeviceInfoResponse;
 
 /* 修改硬件配置 */
@@ -207,21 +281,21 @@ typedef struct _led_control_SetLightConfigRequest {
 } led_control_SetLightConfigRequest;
 
 typedef struct _led_control_SetLightConfigResponse {
-    led_control_ErrorCode error; /* 操作结果 */
-    char error_msg[65]; /* 错误原因描述 */
-    bool restart_required; /* 是否需要重启设备才能生效 */
+    led_control_ErrorCode error;
+    char error_msg[64];
+    bool restart_required;
 } led_control_SetLightConfigResponse;
 
 /* 设置自定义颜色通道顺序（覆盖常见预设） */
 typedef struct _led_control_SetCustomChannelOrderRequest {
     /* 5 元素数组 [红位置, 绿位置, 蓝位置, 暖白位置, 冷白位置]
  取值 0-4 或 255（无此通道） */
-    pb_callback_t order;
+    uint32_t order[5];
 } led_control_SetCustomChannelOrderRequest;
 
 typedef struct _led_control_SetCustomChannelOrderResponse {
     led_control_ErrorCode error;
-    char error_msg[65];
+    char error_msg[64];
 } led_control_SetCustomChannelOrderResponse;
 
 /* 扫描 IC 灯带上的芯片数量 */
@@ -244,114 +318,126 @@ typedef struct _led_control_SetChannelModeRequest {
 
 typedef struct _led_control_SetChannelModeResponse {
     led_control_ErrorCode error;
-    char error_msg[65];
+    char error_msg[64];
 } led_control_SetChannelModeResponse;
+
+/* 设置蓝牙的名称 */
+typedef struct _led_control_SetDeviceNameRequest {
+    char name[20]; /* 最大 20 字节，设备端截断 */
+} led_control_SetDeviceNameRequest;
+
+typedef struct _led_control_SetDeviceNameResponse {
+    led_control_ErrorCode error;
+    char error_msg[64];
+} led_control_SetDeviceNameResponse;
+
+typedef struct _led_control_SceneOperationRequest {
+    led_control_SceneOp op; /* 操作类型 */
+    uint32_t scene_id; /* DELETE 或 RUN 或更新时必需，新建时可留空 */
+    bool has_scene;
+    led_control_CustomScene scene; /* SAVE 时携带 */
+} led_control_SceneOperationRequest;
+
+typedef struct _led_control_SceneOperationResponse {
+    led_control_ErrorCode error;
+    char error_msg[64];
+    bool has_scene_id;
+    uint32_t scene_id; /* SAVE 成功时返回新分配的场景 ID */
+} led_control_SceneOperationResponse;
+
+/* 【新增】获取单个场景的完整定义
+ 用途：APP 编辑场景时需要获取完整的 segments 信息 */
+typedef struct _led_control_GetCustomSceneRequest {
+    uint32_t scene_id; /* 要获取的场景 ID */
+    /* 【可选】分页参数，用于超多 segments 的场景（虽然限制了最多8个，但保留扩展性） */
+    bool has_segment_offset;
+    uint32_t segment_offset; /* 起始 segment 索引，默认 0 */
+    bool has_segment_limit;
+    uint32_t segment_limit; /* 每次获取数量，默认 8，最大 8 */
+} led_control_GetCustomSceneRequest;
+
+typedef struct _led_control_GetCustomSceneResponse {
+    led_control_ErrorCode error;
+    char error_msg[64];
+    uint32_t scene_id; /* 场景 ID */
+    bool has_name;
+    char name[24]; /* 场景名称 */
+    uint32_t total_segments; /* 总 segment 数量 */
+    uint32_t global_speed; /* 全局速度 */
+    /* 返回的 segments（可能是全部，也可能是部分） */
+    pb_size_t segments_count;
+    led_control_SegmentConfig segments[8];
+    bool has_more;
+    bool has_favorite;
+    bool favorite; /* 返回场景的收藏标记 */
+} led_control_GetCustomSceneResponse;
+
+/* 获取设备上已保存的场景列表
+ 【优化】支持分页，避免场景过多时响应过大 */
+typedef struct _led_control_ListScenesRequest {
+    bool has_offset;
+    uint32_t offset; /* 起始索引，默认 0 */
+    bool has_limit;
+    uint32_t limit; /* 每次获取数量，建议 5，最大 7 */
+} led_control_ListScenesRequest;
+
+typedef struct _led_control_ListScenesResponse {
+    pb_size_t scenes_count;
+    led_control_SceneSummary scenes[7];
+    uint32_t total_count;
+    bool has_more;
+} led_control_ListScenesResponse;
 
 /* 总开关 */
 typedef struct _led_control_SetOnOffRequest {
-    bool power; /* true = 开，false = 关 */
+    bool power;
 } led_control_SetOnOffRequest;
 
-typedef struct _led_control_SetOnOffResponse {
-    led_control_ErrorCode error;
-} led_control_SetOnOffResponse;
-
-/* 全局亮度调节 */
+/* 全局亮度 */
 typedef struct _led_control_SetBrightnessRequest {
-    uint32_t brightness; /* 亮度 0 - 100 */
+    uint32_t brightness;
 } led_control_SetBrightnessRequest;
 
-typedef struct _led_control_SetBrightnessResponse {
-    led_control_ErrorCode error;
-} led_control_SetBrightnessResponse;
+/* 白光亮度控制：只修改 white_brightness 字段 */
+typedef struct _led_control_SetWhiteBrightnessRequest {
+    uint32_t white_brightness;
+} led_control_SetWhiteBrightnessRequest;
 
-/* 设置颜色 / 色温 */
+/* 颜色/色温 */
 typedef struct _led_control_SetColorRequest {
-    led_control_ColorMode mode; /* 目标颜色模式 */
+    led_control_ColorMode mode;
     bool has_rgb;
-    led_control_ColorRGB rgb; /* mode=RGB/MIXED时使用 */
+    led_control_ColorRGB rgb;
     bool has_cct;
-    led_control_ColorTemperature cct; /* mode=CCT/MIXED时使用 */
+    led_control_ColorTemperature cct;
     bool has_brightness;
-    uint32_t brightness; /* 可选：同步修改全局亮度 */
+    uint32_t brightness;
     bool has_white_brightness;
-    uint32_t white_brightness; /* 【新增】可选：同步修改白光亮度 */
+    uint32_t white_brightness;
 } led_control_SetColorRequest;
 
-typedef struct _led_control_SetColorResponse {
-    led_control_ErrorCode error;
-} led_control_SetColorResponse;
-
-/* 批量静态模式设置（一次性下发开关、亮度、颜色） */
+/* 批量静态模式设置（进入或配置静态模式的唯一指令） */
 typedef struct _led_control_SetStaticModeRequest {
-    bool power; /* 开关 */
-    uint32_t brightness; /* 亮度 0 - 100 */
-    led_control_ColorMode mode; /* 颜色模式 */
+    bool power; /* 开关灯 */
+    uint32_t brightness; /* RGB通道的全局亮度 (0-100) */
+    led_control_ColorMode mode; /* 颜色模式：RGB / CCT / MIXED */
     pb_size_t which_color;
     union {
-        led_control_ColorRGB rgb; /* RGB 颜色 */
-        led_control_ColorTemperature cct; /* 色温值 */
+        led_control_ColorRGB rgb; /* mode=RGB/MIXED时使用 */
+        led_control_ColorTemperature cct; /* mode=CCT/MIXED时使用 */
     } color;
-    /* 【新增】独立白光亮度，仅当device_type支持白光时有效
+    /* 【优化】独立白光亮度，仅在 mode=CCT 或 mode=MIXED 时有效
  若未填写，固件应保持上次白光亮度不变 */
     bool has_white_brightness;
     uint32_t white_brightness;
 } led_control_SetStaticModeRequest;
 
-typedef struct _led_control_SetStaticModeResponse {
-    led_control_ErrorCode error;
-} led_control_SetStaticModeResponse;
-
-/* 启动一个预置动态效果 */
+/* 动态效果 */
 typedef struct _led_control_SetPresetEffectRequest {
-    led_control_DynamicEffect effect; /* 效果 ID */
-    uint32_t speed; /* 速度 1 - 100 */
-    uint32_t brightness; /* 全局亮度 0 - 100（本次效果运行时的亮度） */
+    uint32_t scene_id; /* 预置场景 ID（由 GetPresetScenes 获得） */
+    uint32_t speed; /* 1-100 */
+    uint32_t brightness; /* 0-100 */
 } led_control_SetPresetEffectRequest;
-
-typedef struct _led_control_SetPresetEffectResponse {
-    led_control_ErrorCode error;
-} led_control_SetPresetEffectResponse;
-
-typedef struct _led_control_SceneOperationRequest {
-    led_control_SceneOp op; /* 操作类型 */
-    uint32_t scene_id; /* 目标场景 ID */
-    bool has_scene;
-    led_control_CustomScene scene; /* 场景完整定义（SAVE / RUN 临时场景时携带） */
-} led_control_SceneOperationRequest;
-
-typedef struct _led_control_SceneOperationResponse {
-    led_control_ErrorCode error;
-    char error_msg[65];
-} led_control_SceneOperationResponse;
-
-/* 获取设备上已保存的场景列表 */
-typedef struct _led_control_ListScenesRequest {
-    char dummy_field;
-} led_control_ListScenesRequest;
-
-typedef struct _led_control_SceneSummary {
-    uint32_t id; /* 场景 ID */
-    char name[33]; /* 场景名称 */
-} led_control_SceneSummary;
-
-typedef struct _led_control_ListScenesResponse {
-    pb_size_t scenes_count;
-    led_control_SceneSummary scenes[32];
-} led_control_ListScenesResponse;
-
-/* ---------- 状态推送（设备主动上报） ----------
- 当设备状态发生变化（如物理按键触发）时，固件主动推送此消息。
- 为简化实现，这里直接推送完整的 DeviceStatus；也可按 changed_fields 精细控制。 */
-typedef struct _led_control_StateNotification {
-    uint32_t changed_fields; /* 预留位掩码，暂不使用 */
-    bool has_static_state;
-    led_control_StaticState static_state;
-    bool has_preset_effect;
-    led_control_PresetEffect preset_effect;
-    bool has_custom_scene;
-    led_control_CustomScene custom_scene;
-} led_control_StateNotification;
 
 typedef struct _led_control_OTAStartParams {
     uint32_t total_size; /* 固件总字节数 */
@@ -359,10 +445,10 @@ typedef struct _led_control_OTAStartParams {
     uint32_t crc32; /* 整包 CRC32 校验值 */
 } led_control_OTAStartParams;
 
-typedef PB_BYTES_ARRAY_T(512) led_control_OTADataParams_chunk_t;
+typedef PB_BYTES_ARRAY_T(480) led_control_OTADataParams_chunk_t;
 typedef struct _led_control_OTADataParams {
     uint32_t offset; /* 当前数据块的起始偏移地址 */
-    led_control_OTADataParams_chunk_t chunk; /* 固件数据块 */
+    led_control_OTADataParams_chunk_t chunk; /* 固件数据块，注意：chunk 大小应控制在 MTU 范围内 */
 } led_control_OTADataParams;
 
 /* OTA 请求信封（使用独立端点时也可直接发送 OTARequest） */
@@ -378,7 +464,7 @@ typedef struct _led_control_OTARequest {
 /* OTA 响应 */
 typedef struct _led_control_OTAResponse {
     led_control_ErrorCode error; /* 操作结果 */
-    char error_msg[65]; /* 错误描述 */
+    char error_msg[64]; /* 错误描述 */
     uint32_t received_bytes; /* 已接收字节数 */
     uint32_t total_bytes; /* 固件总字节数 */
     uint32_t percent; /* 进度百分比 0 - 100 */
@@ -387,7 +473,7 @@ typedef struct _led_control_OTAResponse {
 
 /* 保活与延迟测量 */
 typedef struct _led_control_PingRequest {
-    uint64_t client_timestamp; /* App 发送时的毫秒时间戳 */
+    uint64_t client_timestamp;
 } led_control_PingRequest;
 
 typedef struct _led_control_PingResponse {
@@ -404,30 +490,58 @@ typedef struct _led_control_FactoryResetResponse {
     led_control_ErrorCode error;
 } led_control_FactoryResetResponse;
 
-/* 统一响应信封 */
-typedef struct _led_control_EnvelopeResponse {
-    uint32_t request_id; /* 对应的请求 ID */
-    led_control_ErrorCode error; /* 操作结果（OK 表示成功） */
-    char error_msg[1024]; /* 错误时的详细描述 */
-    pb_size_t which_result;
+/* 【新增】部分状态更新补丁（用于增量通知） */
+typedef struct _led_control_StaticStatePatch {
+    bool has_power;
+    bool power;
+    bool has_brightness;
+    uint32_t brightness;
+    bool has_color_mode;
+    led_control_ColorMode color_mode;
+    bool has_rgb;
+    led_control_ColorRGB rgb;
+    bool has_cct;
+    led_control_ColorTemperature cct;
+    bool has_white_brightness;
+    uint32_t white_brightness;
+} led_control_StaticStatePatch;
+
+typedef struct _led_control_PresetEffectPatch {
+    bool has_scene_id;
+    uint32_t scene_id;
+    bool has_speed;
+    uint32_t speed;
+    bool has_brightness;
+    uint32_t brightness;
+} led_control_PresetEffectPatch;
+
+typedef struct _led_control_PartialStatusUpdate {
+    bool has_current_mode;
+    led_control_RunMode current_mode;
+    bool has_static_state_patch;
+    led_control_StaticStatePatch static_state_patch;
+    bool has_preset_effect_patch;
+    led_control_PresetEffectPatch preset_effect_patch;
+    bool has_custom_scene_summary;
+    led_control_CustomSceneSummary custom_scene_summary;
+} led_control_PartialStatusUpdate;
+
+/* 统一状态通知 (Notify)
+ 用途1：设备状态变更（按键、定时、APP控制后的回显）
+ 用途2：作为控制指令的“异步 ACK” */
+typedef struct _led_control_StateNotification {
+    /* 关联的命令ID。
+ - 如果是响应 APP 的控制指令，填入原 Envelope.request_id
+ - 如果是设备主动上报（如按键），此字段为 0 或不填 */
+    bool has_source_cmd_id;
+    uint32_t source_cmd_id;
+    led_control_StateNotification_UpdateType update_type;
+    pb_size_t which_payload;
     union {
-        led_control_GetDeviceInfoResponse device_info_result;
-        led_control_SetLightConfigResponse set_light_config;
-        led_control_SetCustomChannelOrderResponse set_channel_order;
-        led_control_SetChannelModeResponse set_channel_mode_result;
-        led_control_IcScanResult ic_scan_result;
-        led_control_SetOnOffResponse set_on_off_result;
-        led_control_SetBrightnessResponse set_brightness_result;
-        led_control_SetColorResponse set_color_result;
-        led_control_SetStaticModeResponse set_static_result;
-        led_control_SetPresetEffectResponse set_preset_result;
-        led_control_SceneOperationResponse scene_op_result;
-        led_control_ListScenesResponse list_scenes_result;
-        led_control_OTAResponse ota_result;
-        led_control_PingResponse ping_result;
-        led_control_FactoryResetResponse factory_reset_result;
-    } result;
-} led_control_EnvelopeResponse;
+        led_control_DeviceStatus full_status; /* 完整状态 */
+        led_control_PartialStatusUpdate partial_update; /* 增量状态 */
+    } payload;
+} led_control_StateNotification;
 
 typedef struct _led_control_Envelope {
     uint32_t protocol_version; /* 协议版本号，当前为 2，用于协商 */
@@ -436,30 +550,61 @@ typedef struct _led_control_Envelope {
     union {
         /* ---- 查询 (10-19) ---- */
         led_control_GetDeviceInfoRequest get_device_info;
+        led_control_GetSupportedModesRequest get_supported_modes;
+        led_control_GetPresetScenesRequest get_preset_scenes;
         /* ---- 配置 (20-29) ---- */
         led_control_SetLightConfigRequest set_light_config;
         led_control_SetCustomChannelOrderRequest set_channel_order;
         led_control_ScanIcRequest scan_ic;
         led_control_SetChannelModeRequest set_channel_mode;
-        /* ---- 灯光控制 (30-39) ---- */
+        led_control_SetDeviceNameRequest set_device_name;
+        /* ---- 灯光控制 (30-39) (无 Response，靠 StateNotification 确认) ---- */
         led_control_SetOnOffRequest set_on_off;
         led_control_SetBrightnessRequest set_brightness;
+        led_control_SetWhiteBrightnessRequest set_white_brightness;
         led_control_SetColorRequest set_color;
         led_control_SetStaticModeRequest set_static_mode;
         led_control_SetPresetEffectRequest set_preset_effect;
         /* ---- 自定义场景 (40-49) ---- */
         led_control_SceneOperationRequest scene_op;
         led_control_ListScenesRequest list_scenes;
+        led_control_GetCustomSceneRequest get_custom_scene;
         /* ---- OTA (50-59) ---- */
         led_control_OTARequest ota;
         /* ---- 系统 (60-69) ---- */
         led_control_PingRequest ping;
         led_control_FactoryResetRequest factory_reset;
-        /* ---- 设备 → App ---- */
-        led_control_EnvelopeResponse response; /* 统一响应 */
-        led_control_StateNotification state_notify; /* 状态推送 */
     } payload;
 } led_control_Envelope;
+
+/* 统一响应信封 (Notify) */
+typedef struct _led_control_EnvelopeResponse {
+    uint32_t request_id;
+    led_control_ErrorCode error;
+    char error_msg[64];
+    pb_size_t which_result;
+    union {
+        /* 查询响应 */
+        led_control_GetDeviceInfoResponse device_info_result;
+        led_control_GetSupportedModesResponse supported_modes_result;
+        led_control_GetPresetScenesResponse preset_scenes_result;
+        /* 配置响应 */
+        led_control_SetLightConfigResponse set_light_config;
+        led_control_SetCustomChannelOrderResponse set_channel_order;
+        led_control_IcScanResult ic_scan_result;
+        led_control_SetChannelModeResponse set_channel_mode_result;
+        led_control_SetDeviceNameResponse set_device_name_result;
+        /* 场景响应 */
+        led_control_SceneOperationResponse scene_op_result;
+        led_control_ListScenesResponse list_scenes_result;
+        led_control_GetCustomSceneResponse get_custom_scene_result;
+        /* OTA 响应 */
+        led_control_OTAResponse ota_result;
+        /* 系统响应 */
+        led_control_PingResponse ping_result;
+        led_control_FactoryResetResponse factory_reset_result;
+    } result;
+} led_control_EnvelopeResponse;
 
 
 #ifdef __cplusplus
@@ -479,13 +624,9 @@ extern "C" {
 #define _led_control_ChannelMode_MAX led_control_ChannelMode_CHANNEL_IC
 #define _led_control_ChannelMode_ARRAYSIZE ((led_control_ChannelMode)(led_control_ChannelMode_CHANNEL_IC+1))
 
-#define _led_control_DynamicEffect_MIN led_control_DynamicEffect_EFFECT_NONE
-#define _led_control_DynamicEffect_MAX led_control_DynamicEffect_EFFECT_BREATHE_MULTI
-#define _led_control_DynamicEffect_ARRAYSIZE ((led_control_DynamicEffect)(led_control_DynamicEffect_EFFECT_BREATHE_MULTI+1))
-
-#define _led_control_SegmentEffect_MIN led_control_SegmentEffect_SEGMENT_STATIC
-#define _led_control_SegmentEffect_MAX led_control_SegmentEffect_SEGMENT_FLOW_FORWARD
-#define _led_control_SegmentEffect_ARRAYSIZE ((led_control_SegmentEffect)(led_control_SegmentEffect_SEGMENT_FLOW_FORWARD+1))
+#define _led_control_RunMode_MIN led_control_RunMode_MODE_UNKNOWN
+#define _led_control_RunMode_MAX led_control_RunMode_MODE_CUSTOM
+#define _led_control_RunMode_ARRAYSIZE ((led_control_RunMode)(led_control_RunMode_MODE_CUSTOM+1))
 
 #define _led_control_ErrorCode_MIN led_control_ErrorCode_OK
 #define _led_control_ErrorCode_MAX led_control_ErrorCode_ERR_OTA_WRITE_FLASH
@@ -495,9 +636,18 @@ extern "C" {
 #define _led_control_SceneOp_MAX led_control_SceneOp_SCENE_OP_STOP
 #define _led_control_SceneOp_ARRAYSIZE ((led_control_SceneOp)(led_control_SceneOp_SCENE_OP_STOP+1))
 
+#define _led_control_GetDeviceInfoRequest_InfoType_MIN led_control_GetDeviceInfoRequest_InfoType_INFO_BASIC
+#define _led_control_GetDeviceInfoRequest_InfoType_MAX led_control_GetDeviceInfoRequest_InfoType_INFO_ALL
+#define _led_control_GetDeviceInfoRequest_InfoType_ARRAYSIZE ((led_control_GetDeviceInfoRequest_InfoType)(led_control_GetDeviceInfoRequest_InfoType_INFO_ALL+1))
+
 #define _led_control_OTARequest_Cmd_MIN led_control_OTARequest_Cmd_CMD_START
 #define _led_control_OTARequest_Cmd_MAX led_control_OTARequest_Cmd_CMD_ABORT
 #define _led_control_OTARequest_Cmd_ARRAYSIZE ((led_control_OTARequest_Cmd)(led_control_OTARequest_Cmd_CMD_ABORT+1))
+
+#define _led_control_StateNotification_UpdateType_MIN led_control_StateNotification_UpdateType_UPDATE_FULL
+#define _led_control_StateNotification_UpdateType_MAX led_control_StateNotification_UpdateType_UPDATE_PARTIAL
+#define _led_control_StateNotification_UpdateType_ARRAYSIZE ((led_control_StateNotification_UpdateType)(led_control_StateNotification_UpdateType_UPDATE_PARTIAL+1))
+
 
 
 
@@ -507,13 +657,22 @@ extern "C" {
 
 #define led_control_StaticState_color_mode_ENUMTYPE led_control_ColorMode
 
-#define led_control_PresetEffect_scene_id_ENUMTYPE led_control_DynamicEffect
-
-#define led_control_SegmentConfig_mode_effect_ENUMTYPE led_control_SegmentEffect
 
 
 
 
+
+
+
+
+
+
+#define led_control_DeviceStatus_current_mode_ENUMTYPE led_control_RunMode
+
+
+#define led_control_GetDeviceInfoRequest_type_ENUMTYPE led_control_GetDeviceInfoRequest_InfoType
+
+#define led_control_GetDeviceInfoResponse_type_ENUMTYPE led_control_GetDeviceInfoRequest_InfoType
 
 
 #define led_control_SetLightConfigResponse_error_ENUMTYPE led_control_ErrorCode
@@ -532,29 +691,23 @@ extern "C" {
 #define led_control_SetChannelModeResponse_error_ENUMTYPE led_control_ErrorCode
 
 
-#define led_control_SetOnOffResponse_error_ENUMTYPE led_control_ErrorCode
-
-
-#define led_control_SetBrightnessResponse_error_ENUMTYPE led_control_ErrorCode
-
-#define led_control_SetColorRequest_mode_ENUMTYPE led_control_ColorMode
-
-#define led_control_SetColorResponse_error_ENUMTYPE led_control_ErrorCode
-
-#define led_control_SetStaticModeRequest_mode_ENUMTYPE led_control_ColorMode
-
-#define led_control_SetStaticModeResponse_error_ENUMTYPE led_control_ErrorCode
-
-#define led_control_SetPresetEffectRequest_effect_ENUMTYPE led_control_DynamicEffect
-
-#define led_control_SetPresetEffectResponse_error_ENUMTYPE led_control_ErrorCode
+#define led_control_SetDeviceNameResponse_error_ENUMTYPE led_control_ErrorCode
 
 #define led_control_SceneOperationRequest_op_ENUMTYPE led_control_SceneOp
 
 #define led_control_SceneOperationResponse_error_ENUMTYPE led_control_ErrorCode
 
 
+#define led_control_GetCustomSceneResponse_error_ENUMTYPE led_control_ErrorCode
 
+
+
+
+
+
+#define led_control_SetColorRequest_mode_ENUMTYPE led_control_ColorMode
+
+#define led_control_SetStaticModeRequest_mode_ENUMTYPE led_control_ColorMode
 
 
 
@@ -568,6 +721,13 @@ extern "C" {
 
 #define led_control_FactoryResetResponse_error_ENUMTYPE led_control_ErrorCode
 
+#define led_control_StaticStatePatch_color_mode_ENUMTYPE led_control_ColorMode
+
+
+#define led_control_PartialStatusUpdate_current_mode_ENUMTYPE led_control_RunMode
+
+#define led_control_StateNotification_update_type_ENUMTYPE led_control_StateNotification_UpdateType
+
 
 #define led_control_EnvelopeResponse_error_ENUMTYPE led_control_ErrorCode
 
@@ -575,39 +735,46 @@ extern "C" {
 /* Initializer values for message structs */
 #define led_control_ColorRGB_init_default        {0, 0, 0}
 #define led_control_ColorTemperature_init_default {0}
-#define led_control_LightConfig_init_default     {_led_control_DeviceType_MIN, 0, {0, 0, 0, 0, 0}, 0}
+#define led_control_SceneColor_init_default      {0, {led_control_ColorRGB_init_default}}
+#define led_control_LightConfig_init_default     {_led_control_DeviceType_MIN, {0, 0, 0, 0, 0}, 0}
 #define led_control_DeviceInfo_init_default      {"", "", "", "", _led_control_DeviceType_MIN, 0, 0, 0, 0, 0, 0, 0}
 #define led_control_StaticState_init_default     {0, 0, _led_control_ColorMode_MIN, false, led_control_ColorRGB_init_default, false, led_control_ColorTemperature_init_default, false, 0}
-#define led_control_PresetEffect_init_default    {_led_control_DynamicEffect_MIN, 0}
-#define led_control_SegmentConfig_init_default   {0, 0, 0, {led_control_ColorRGB_init_default}}
-#define led_control_CustomScene_init_default     {0, "", 0, 0, {led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default}, 0}
-#define led_control_DeviceStatus_init_default    {0, {led_control_StaticState_init_default}}
-#define led_control_GetDeviceInfoRequest_init_default {0}
-#define led_control_GetDeviceInfoResponse_init_default {false, led_control_DeviceInfo_init_default, false, led_control_LightConfig_init_default, false, led_control_DeviceStatus_init_default}
+#define led_control_PresetEffect_init_default    {0, 0, false, 0}
+#define led_control_CustomSceneSummary_init_default {0, false, "", 0, 0, false, 0}
+#define led_control_SegmentConfig_init_default   {0, 0, 0, 0, {led_control_SceneColor_init_default, led_control_SceneColor_init_default, led_control_SceneColor_init_default}, 0, false, 0, false, 0}
+#define led_control_CustomScene_init_default     {0, false, "", 0, 0, {led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default}, 0, false, 0, false, 0}
+#define led_control_ModeInfo_init_default        {0, "", 0, 0}
+#define led_control_GetSupportedModesRequest_init_default {0}
+#define led_control_GetSupportedModesResponse_init_default {0, {led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default, led_control_ModeInfo_init_default}}
+#define led_control_PresetSceneSummary_init_default {0, ""}
+#define led_control_GetPresetScenesRequest_init_default {0}
+#define led_control_GetPresetScenesResponse_init_default {0, {led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default, led_control_PresetSceneSummary_init_default}}
+#define led_control_DeviceStatus_init_default    {_led_control_RunMode_MIN, false, led_control_StaticState_init_default, false, led_control_PresetEffect_init_default, false, led_control_CustomSceneSummary_init_default}
+#define led_control_SceneSummary_init_default    {0, false, "", 0}
+#define led_control_GetDeviceInfoRequest_init_default {_led_control_GetDeviceInfoRequest_InfoType_MIN}
+#define led_control_GetDeviceInfoResponse_init_default {_led_control_GetDeviceInfoRequest_InfoType_MIN, false, led_control_DeviceInfo_init_default, false, led_control_LightConfig_init_default, false, led_control_DeviceStatus_init_default}
 #define led_control_SetLightConfigRequest_init_default {false, led_control_LightConfig_init_default}
 #define led_control_SetLightConfigResponse_init_default {_led_control_ErrorCode_MIN, "", 0}
-#define led_control_SetCustomChannelOrderRequest_init_default {{{NULL}, NULL}}
+#define led_control_SetCustomChannelOrderRequest_init_default {{0, 0, 0, 0, 0}}
 #define led_control_SetCustomChannelOrderResponse_init_default {_led_control_ErrorCode_MIN, ""}
 #define led_control_ScanIcRequest_init_default   {0}
 #define led_control_IcScanResult_init_default    {0}
 #define led_control_SetChannelModeRequest_init_default {_led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN}
 #define led_control_SetChannelModeResponse_init_default {_led_control_ErrorCode_MIN, ""}
-#define led_control_SetOnOffRequest_init_default {0}
-#define led_control_SetOnOffResponse_init_default {_led_control_ErrorCode_MIN}
-#define led_control_SetBrightnessRequest_init_default {0}
-#define led_control_SetBrightnessResponse_init_default {_led_control_ErrorCode_MIN}
-#define led_control_SetColorRequest_init_default {_led_control_ColorMode_MIN, false, led_control_ColorRGB_init_default, false, led_control_ColorTemperature_init_default, false, 0, false, 0}
-#define led_control_SetColorResponse_init_default {_led_control_ErrorCode_MIN}
-#define led_control_SetStaticModeRequest_init_default {0, 0, _led_control_ColorMode_MIN, 0, {led_control_ColorRGB_init_default}, false, 0}
-#define led_control_SetStaticModeResponse_init_default {_led_control_ErrorCode_MIN}
-#define led_control_SetPresetEffectRequest_init_default {_led_control_DynamicEffect_MIN, 0, 0}
-#define led_control_SetPresetEffectResponse_init_default {_led_control_ErrorCode_MIN}
+#define led_control_SetDeviceNameRequest_init_default {""}
+#define led_control_SetDeviceNameResponse_init_default {_led_control_ErrorCode_MIN, ""}
 #define led_control_SceneOperationRequest_init_default {_led_control_SceneOp_MIN, 0, false, led_control_CustomScene_init_default}
-#define led_control_SceneOperationResponse_init_default {_led_control_ErrorCode_MIN, ""}
-#define led_control_ListScenesRequest_init_default {0}
-#define led_control_ListScenesResponse_init_default {0, {led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default}}
-#define led_control_SceneSummary_init_default    {0, ""}
-#define led_control_StateNotification_init_default {0, false, led_control_StaticState_init_default, false, led_control_PresetEffect_init_default, false, led_control_CustomScene_init_default}
+#define led_control_SceneOperationResponse_init_default {_led_control_ErrorCode_MIN, "", false, 0}
+#define led_control_GetCustomSceneRequest_init_default {0, false, 0, false, 0}
+#define led_control_GetCustomSceneResponse_init_default {_led_control_ErrorCode_MIN, "", 0, false, "", 0, 0, 0, {led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default, led_control_SegmentConfig_init_default}, 0, false, 0}
+#define led_control_ListScenesRequest_init_default {false, 0, false, 0}
+#define led_control_ListScenesResponse_init_default {0, {led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default, led_control_SceneSummary_init_default}, 0, 0}
+#define led_control_SetOnOffRequest_init_default {0}
+#define led_control_SetBrightnessRequest_init_default {0}
+#define led_control_SetWhiteBrightnessRequest_init_default {0}
+#define led_control_SetColorRequest_init_default {_led_control_ColorMode_MIN, false, led_control_ColorRGB_init_default, false, led_control_ColorTemperature_init_default, false, 0, false, 0}
+#define led_control_SetStaticModeRequest_init_default {0, 0, _led_control_ColorMode_MIN, 0, {led_control_ColorRGB_init_default}, false, 0}
+#define led_control_SetPresetEffectRequest_init_default {0, 0, 0}
 #define led_control_OTAStartParams_init_default  {0, 0, 0}
 #define led_control_OTADataParams_init_default   {0, {0, {0}}}
 #define led_control_OTARequest_init_default      {_led_control_OTARequest_Cmd_MIN, 0, {led_control_OTAStartParams_init_default}}
@@ -616,43 +783,54 @@ extern "C" {
 #define led_control_PingResponse_init_default    {0, 0}
 #define led_control_FactoryResetRequest_init_default {0}
 #define led_control_FactoryResetResponse_init_default {_led_control_ErrorCode_MIN}
+#define led_control_StaticStatePatch_init_default {false, 0, false, 0, false, _led_control_ColorMode_MIN, false, led_control_ColorRGB_init_default, false, led_control_ColorTemperature_init_default, false, 0}
+#define led_control_PresetEffectPatch_init_default {false, 0, false, 0, false, 0}
+#define led_control_PartialStatusUpdate_init_default {false, _led_control_RunMode_MIN, false, led_control_StaticStatePatch_init_default, false, led_control_PresetEffectPatch_init_default, false, led_control_CustomSceneSummary_init_default}
+#define led_control_StateNotification_init_default {false, 0, _led_control_StateNotification_UpdateType_MIN, 0, {led_control_DeviceStatus_init_default}}
 #define led_control_Envelope_init_default        {0, 0, 0, {led_control_GetDeviceInfoRequest_init_default}}
 #define led_control_EnvelopeResponse_init_default {0, _led_control_ErrorCode_MIN, "", 0, {led_control_GetDeviceInfoResponse_init_default}}
 #define led_control_ColorRGB_init_zero           {0, 0, 0}
 #define led_control_ColorTemperature_init_zero   {0}
-#define led_control_LightConfig_init_zero        {_led_control_DeviceType_MIN, 0, {0, 0, 0, 0, 0}, 0}
+#define led_control_SceneColor_init_zero         {0, {led_control_ColorRGB_init_zero}}
+#define led_control_LightConfig_init_zero        {_led_control_DeviceType_MIN, {0, 0, 0, 0, 0}, 0}
 #define led_control_DeviceInfo_init_zero         {"", "", "", "", _led_control_DeviceType_MIN, 0, 0, 0, 0, 0, 0, 0}
 #define led_control_StaticState_init_zero        {0, 0, _led_control_ColorMode_MIN, false, led_control_ColorRGB_init_zero, false, led_control_ColorTemperature_init_zero, false, 0}
-#define led_control_PresetEffect_init_zero       {_led_control_DynamicEffect_MIN, 0}
-#define led_control_SegmentConfig_init_zero      {0, 0, 0, {led_control_ColorRGB_init_zero}}
-#define led_control_CustomScene_init_zero        {0, "", 0, 0, {led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero}, 0}
-#define led_control_DeviceStatus_init_zero       {0, {led_control_StaticState_init_zero}}
-#define led_control_GetDeviceInfoRequest_init_zero {0}
-#define led_control_GetDeviceInfoResponse_init_zero {false, led_control_DeviceInfo_init_zero, false, led_control_LightConfig_init_zero, false, led_control_DeviceStatus_init_zero}
+#define led_control_PresetEffect_init_zero       {0, 0, false, 0}
+#define led_control_CustomSceneSummary_init_zero {0, false, "", 0, 0, false, 0}
+#define led_control_SegmentConfig_init_zero      {0, 0, 0, 0, {led_control_SceneColor_init_zero, led_control_SceneColor_init_zero, led_control_SceneColor_init_zero}, 0, false, 0, false, 0}
+#define led_control_CustomScene_init_zero        {0, false, "", 0, 0, {led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero}, 0, false, 0, false, 0}
+#define led_control_ModeInfo_init_zero           {0, "", 0, 0}
+#define led_control_GetSupportedModesRequest_init_zero {0}
+#define led_control_GetSupportedModesResponse_init_zero {0, {led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero, led_control_ModeInfo_init_zero}}
+#define led_control_PresetSceneSummary_init_zero {0, ""}
+#define led_control_GetPresetScenesRequest_init_zero {0}
+#define led_control_GetPresetScenesResponse_init_zero {0, {led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero, led_control_PresetSceneSummary_init_zero}}
+#define led_control_DeviceStatus_init_zero       {_led_control_RunMode_MIN, false, led_control_StaticState_init_zero, false, led_control_PresetEffect_init_zero, false, led_control_CustomSceneSummary_init_zero}
+#define led_control_SceneSummary_init_zero       {0, false, "", 0}
+#define led_control_GetDeviceInfoRequest_init_zero {_led_control_GetDeviceInfoRequest_InfoType_MIN}
+#define led_control_GetDeviceInfoResponse_init_zero {_led_control_GetDeviceInfoRequest_InfoType_MIN, false, led_control_DeviceInfo_init_zero, false, led_control_LightConfig_init_zero, false, led_control_DeviceStatus_init_zero}
 #define led_control_SetLightConfigRequest_init_zero {false, led_control_LightConfig_init_zero}
 #define led_control_SetLightConfigResponse_init_zero {_led_control_ErrorCode_MIN, "", 0}
-#define led_control_SetCustomChannelOrderRequest_init_zero {{{NULL}, NULL}}
+#define led_control_SetCustomChannelOrderRequest_init_zero {{0, 0, 0, 0, 0}}
 #define led_control_SetCustomChannelOrderResponse_init_zero {_led_control_ErrorCode_MIN, ""}
 #define led_control_ScanIcRequest_init_zero      {0}
 #define led_control_IcScanResult_init_zero       {0}
 #define led_control_SetChannelModeRequest_init_zero {_led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN, _led_control_ChannelMode_MIN}
 #define led_control_SetChannelModeResponse_init_zero {_led_control_ErrorCode_MIN, ""}
-#define led_control_SetOnOffRequest_init_zero    {0}
-#define led_control_SetOnOffResponse_init_zero   {_led_control_ErrorCode_MIN}
-#define led_control_SetBrightnessRequest_init_zero {0}
-#define led_control_SetBrightnessResponse_init_zero {_led_control_ErrorCode_MIN}
-#define led_control_SetColorRequest_init_zero    {_led_control_ColorMode_MIN, false, led_control_ColorRGB_init_zero, false, led_control_ColorTemperature_init_zero, false, 0, false, 0}
-#define led_control_SetColorResponse_init_zero   {_led_control_ErrorCode_MIN}
-#define led_control_SetStaticModeRequest_init_zero {0, 0, _led_control_ColorMode_MIN, 0, {led_control_ColorRGB_init_zero}, false, 0}
-#define led_control_SetStaticModeResponse_init_zero {_led_control_ErrorCode_MIN}
-#define led_control_SetPresetEffectRequest_init_zero {_led_control_DynamicEffect_MIN, 0, 0}
-#define led_control_SetPresetEffectResponse_init_zero {_led_control_ErrorCode_MIN}
+#define led_control_SetDeviceNameRequest_init_zero {""}
+#define led_control_SetDeviceNameResponse_init_zero {_led_control_ErrorCode_MIN, ""}
 #define led_control_SceneOperationRequest_init_zero {_led_control_SceneOp_MIN, 0, false, led_control_CustomScene_init_zero}
-#define led_control_SceneOperationResponse_init_zero {_led_control_ErrorCode_MIN, ""}
-#define led_control_ListScenesRequest_init_zero  {0}
-#define led_control_ListScenesResponse_init_zero {0, {led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero}}
-#define led_control_SceneSummary_init_zero       {0, ""}
-#define led_control_StateNotification_init_zero  {0, false, led_control_StaticState_init_zero, false, led_control_PresetEffect_init_zero, false, led_control_CustomScene_init_zero}
+#define led_control_SceneOperationResponse_init_zero {_led_control_ErrorCode_MIN, "", false, 0}
+#define led_control_GetCustomSceneRequest_init_zero {0, false, 0, false, 0}
+#define led_control_GetCustomSceneResponse_init_zero {_led_control_ErrorCode_MIN, "", 0, false, "", 0, 0, 0, {led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero, led_control_SegmentConfig_init_zero}, 0, false, 0}
+#define led_control_ListScenesRequest_init_zero  {false, 0, false, 0}
+#define led_control_ListScenesResponse_init_zero {0, {led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero, led_control_SceneSummary_init_zero}, 0, 0}
+#define led_control_SetOnOffRequest_init_zero    {0}
+#define led_control_SetBrightnessRequest_init_zero {0}
+#define led_control_SetWhiteBrightnessRequest_init_zero {0}
+#define led_control_SetColorRequest_init_zero    {_led_control_ColorMode_MIN, false, led_control_ColorRGB_init_zero, false, led_control_ColorTemperature_init_zero, false, 0, false, 0}
+#define led_control_SetStaticModeRequest_init_zero {0, 0, _led_control_ColorMode_MIN, 0, {led_control_ColorRGB_init_zero}, false, 0}
+#define led_control_SetPresetEffectRequest_init_zero {0, 0, 0}
 #define led_control_OTAStartParams_init_zero     {0, 0, 0}
 #define led_control_OTADataParams_init_zero      {0, {0, {0}}}
 #define led_control_OTARequest_init_zero         {_led_control_OTARequest_Cmd_MIN, 0, {led_control_OTAStartParams_init_zero}}
@@ -661,6 +839,10 @@ extern "C" {
 #define led_control_PingResponse_init_zero       {0, 0}
 #define led_control_FactoryResetRequest_init_zero {0}
 #define led_control_FactoryResetResponse_init_zero {_led_control_ErrorCode_MIN}
+#define led_control_StaticStatePatch_init_zero   {false, 0, false, 0, false, _led_control_ColorMode_MIN, false, led_control_ColorRGB_init_zero, false, led_control_ColorTemperature_init_zero, false, 0}
+#define led_control_PresetEffectPatch_init_zero  {false, 0, false, 0, false, 0}
+#define led_control_PartialStatusUpdate_init_zero {false, _led_control_RunMode_MIN, false, led_control_StaticStatePatch_init_zero, false, led_control_PresetEffectPatch_init_zero, false, led_control_CustomSceneSummary_init_zero}
+#define led_control_StateNotification_init_zero  {false, 0, _led_control_StateNotification_UpdateType_MIN, 0, {led_control_DeviceStatus_init_zero}}
 #define led_control_Envelope_init_zero           {0, 0, 0, {led_control_GetDeviceInfoRequest_init_zero}}
 #define led_control_EnvelopeResponse_init_zero   {0, _led_control_ErrorCode_MIN, "", 0, {led_control_GetDeviceInfoResponse_init_zero}}
 
@@ -669,6 +851,8 @@ extern "C" {
 #define led_control_ColorRGB_g_tag               2
 #define led_control_ColorRGB_b_tag               3
 #define led_control_ColorTemperature_temperature_k_tag 1
+#define led_control_SceneColor_rgb_tag           1
+#define led_control_SceneColor_cct_tag           2
 #define led_control_LightConfig_device_type_tag  1
 #define led_control_LightConfig_color_order_tag  2
 #define led_control_LightConfig_led_count_tag    3
@@ -692,21 +876,46 @@ extern "C" {
 #define led_control_StaticState_white_brightness_tag 6
 #define led_control_PresetEffect_scene_id_tag    1
 #define led_control_PresetEffect_speed_tag       2
+#define led_control_PresetEffect_brightness_tag  3
+#define led_control_CustomSceneSummary_scene_id_tag 1
+#define led_control_CustomSceneSummary_name_tag  2
+#define led_control_CustomSceneSummary_segment_count_tag 3
+#define led_control_CustomSceneSummary_global_speed_tag 4
+#define led_control_CustomSceneSummary_favorite_tag 5
 #define led_control_SegmentConfig_start_index_tag 1
 #define led_control_SegmentConfig_end_index_tag  2
-#define led_control_SegmentConfig_solid_color_tag 3
-#define led_control_SegmentConfig_effect_tag     4
+#define led_control_SegmentConfig_mode_tag       3
+#define led_control_SegmentConfig_colors_tag     4
+#define led_control_SegmentConfig_speed_tag      5
+#define led_control_SegmentConfig_brightness_tag 6
+#define led_control_SegmentConfig_reverse_tag    7
 #define led_control_CustomScene_scene_id_tag     1
 #define led_control_CustomScene_name_tag         2
 #define led_control_CustomScene_segment_count_tag 3
 #define led_control_CustomScene_segments_tag     4
 #define led_control_CustomScene_global_speed_tag 5
-#define led_control_DeviceStatus_static_state_tag 1
-#define led_control_DeviceStatus_preset_effect_tag 2
-#define led_control_DeviceStatus_custom_scene_tag 3
-#define led_control_GetDeviceInfoResponse_info_tag 1
-#define led_control_GetDeviceInfoResponse_config_tag 2
-#define led_control_GetDeviceInfoResponse_status_tag 3
+#define led_control_CustomScene_favorite_tag     6
+#define led_control_CustomScene_preset_scene_id_tag 7
+#define led_control_ModeInfo_id_tag              1
+#define led_control_ModeInfo_name_tag            2
+#define led_control_ModeInfo_min_colors_tag      3
+#define led_control_ModeInfo_max_colors_tag      4
+#define led_control_GetSupportedModesResponse_modes_tag 1
+#define led_control_PresetSceneSummary_id_tag    1
+#define led_control_PresetSceneSummary_name_tag  2
+#define led_control_GetPresetScenesResponse_scenes_tag 1
+#define led_control_DeviceStatus_current_mode_tag 1
+#define led_control_DeviceStatus_static_state_tag 2
+#define led_control_DeviceStatus_preset_effect_tag 3
+#define led_control_DeviceStatus_custom_scene_summary_tag 4
+#define led_control_SceneSummary_id_tag          1
+#define led_control_SceneSummary_name_tag        2
+#define led_control_SceneSummary_favorite_tag    3
+#define led_control_GetDeviceInfoRequest_type_tag 1
+#define led_control_GetDeviceInfoResponse_type_tag 1
+#define led_control_GetDeviceInfoResponse_info_tag 10
+#define led_control_GetDeviceInfoResponse_config_tag 11
+#define led_control_GetDeviceInfoResponse_status_tag 12
 #define led_control_SetLightConfigRequest_config_tag 1
 #define led_control_SetLightConfigResponse_error_tag 1
 #define led_control_SetLightConfigResponse_error_msg_tag 2
@@ -722,39 +931,49 @@ extern "C" {
 #define led_control_SetChannelModeRequest_cw_mode_tag 5
 #define led_control_SetChannelModeResponse_error_tag 1
 #define led_control_SetChannelModeResponse_error_msg_tag 2
+#define led_control_SetDeviceNameRequest_name_tag 1
+#define led_control_SetDeviceNameResponse_error_tag 1
+#define led_control_SetDeviceNameResponse_error_msg_tag 2
+#define led_control_SceneOperationRequest_op_tag 1
+#define led_control_SceneOperationRequest_scene_id_tag 2
+#define led_control_SceneOperationRequest_scene_tag 3
+#define led_control_SceneOperationResponse_error_tag 1
+#define led_control_SceneOperationResponse_error_msg_tag 2
+#define led_control_SceneOperationResponse_scene_id_tag 3
+#define led_control_GetCustomSceneRequest_scene_id_tag 1
+#define led_control_GetCustomSceneRequest_segment_offset_tag 2
+#define led_control_GetCustomSceneRequest_segment_limit_tag 3
+#define led_control_GetCustomSceneResponse_error_tag 1
+#define led_control_GetCustomSceneResponse_error_msg_tag 2
+#define led_control_GetCustomSceneResponse_scene_id_tag 3
+#define led_control_GetCustomSceneResponse_name_tag 4
+#define led_control_GetCustomSceneResponse_total_segments_tag 5
+#define led_control_GetCustomSceneResponse_global_speed_tag 6
+#define led_control_GetCustomSceneResponse_segments_tag 7
+#define led_control_GetCustomSceneResponse_has_more_tag 8
+#define led_control_GetCustomSceneResponse_favorite_tag 9
+#define led_control_ListScenesRequest_offset_tag 1
+#define led_control_ListScenesRequest_limit_tag  2
+#define led_control_ListScenesResponse_scenes_tag 1
+#define led_control_ListScenesResponse_total_count_tag 2
+#define led_control_ListScenesResponse_has_more_tag 3
 #define led_control_SetOnOffRequest_power_tag    1
-#define led_control_SetOnOffResponse_error_tag   1
 #define led_control_SetBrightnessRequest_brightness_tag 1
-#define led_control_SetBrightnessResponse_error_tag 1
+#define led_control_SetWhiteBrightnessRequest_white_brightness_tag 1
 #define led_control_SetColorRequest_mode_tag     1
 #define led_control_SetColorRequest_rgb_tag      2
 #define led_control_SetColorRequest_cct_tag      3
 #define led_control_SetColorRequest_brightness_tag 4
 #define led_control_SetColorRequest_white_brightness_tag 5
-#define led_control_SetColorResponse_error_tag   1
 #define led_control_SetStaticModeRequest_power_tag 1
 #define led_control_SetStaticModeRequest_brightness_tag 2
 #define led_control_SetStaticModeRequest_mode_tag 3
 #define led_control_SetStaticModeRequest_rgb_tag 4
 #define led_control_SetStaticModeRequest_cct_tag 5
 #define led_control_SetStaticModeRequest_white_brightness_tag 6
-#define led_control_SetStaticModeResponse_error_tag 1
-#define led_control_SetPresetEffectRequest_effect_tag 1
+#define led_control_SetPresetEffectRequest_scene_id_tag 1
 #define led_control_SetPresetEffectRequest_speed_tag 2
 #define led_control_SetPresetEffectRequest_brightness_tag 3
-#define led_control_SetPresetEffectResponse_error_tag 1
-#define led_control_SceneOperationRequest_op_tag 1
-#define led_control_SceneOperationRequest_scene_id_tag 2
-#define led_control_SceneOperationRequest_scene_tag 3
-#define led_control_SceneOperationResponse_error_tag 1
-#define led_control_SceneOperationResponse_error_msg_tag 2
-#define led_control_SceneSummary_id_tag          1
-#define led_control_SceneSummary_name_tag        2
-#define led_control_ListScenesResponse_scenes_tag 1
-#define led_control_StateNotification_changed_fields_tag 1
-#define led_control_StateNotification_static_state_tag 2
-#define led_control_StateNotification_preset_effect_tag 3
-#define led_control_StateNotification_custom_scene_tag 4
 #define led_control_OTAStartParams_total_size_tag 1
 #define led_control_OTAStartParams_chunk_size_tag 2
 #define led_control_OTAStartParams_crc32_tag     3
@@ -774,43 +993,62 @@ extern "C" {
 #define led_control_PingResponse_server_timestamp_tag 2
 #define led_control_FactoryResetRequest_confirm_code_tag 1
 #define led_control_FactoryResetResponse_error_tag 1
-#define led_control_EnvelopeResponse_request_id_tag 1
-#define led_control_EnvelopeResponse_error_tag   2
-#define led_control_EnvelopeResponse_error_msg_tag 3
-#define led_control_EnvelopeResponse_device_info_result_tag 10
-#define led_control_EnvelopeResponse_set_light_config_tag 11
-#define led_control_EnvelopeResponse_set_channel_order_tag 12
-#define led_control_EnvelopeResponse_set_channel_mode_result_tag 13
-#define led_control_EnvelopeResponse_ic_scan_result_tag 14
-#define led_control_EnvelopeResponse_set_on_off_result_tag 20
-#define led_control_EnvelopeResponse_set_brightness_result_tag 21
-#define led_control_EnvelopeResponse_set_color_result_tag 22
-#define led_control_EnvelopeResponse_set_static_result_tag 23
-#define led_control_EnvelopeResponse_set_preset_result_tag 24
-#define led_control_EnvelopeResponse_scene_op_result_tag 30
-#define led_control_EnvelopeResponse_list_scenes_result_tag 31
-#define led_control_EnvelopeResponse_ota_result_tag 40
-#define led_control_EnvelopeResponse_ping_result_tag 50
-#define led_control_EnvelopeResponse_factory_reset_result_tag 51
+#define led_control_StaticStatePatch_power_tag   1
+#define led_control_StaticStatePatch_brightness_tag 2
+#define led_control_StaticStatePatch_color_mode_tag 3
+#define led_control_StaticStatePatch_rgb_tag     4
+#define led_control_StaticStatePatch_cct_tag     5
+#define led_control_StaticStatePatch_white_brightness_tag 6
+#define led_control_PresetEffectPatch_scene_id_tag 1
+#define led_control_PresetEffectPatch_speed_tag  2
+#define led_control_PresetEffectPatch_brightness_tag 3
+#define led_control_PartialStatusUpdate_current_mode_tag 1
+#define led_control_PartialStatusUpdate_static_state_patch_tag 2
+#define led_control_PartialStatusUpdate_preset_effect_patch_tag 3
+#define led_control_PartialStatusUpdate_custom_scene_summary_tag 4
+#define led_control_StateNotification_source_cmd_id_tag 1
+#define led_control_StateNotification_update_type_tag 2
+#define led_control_StateNotification_full_status_tag 3
+#define led_control_StateNotification_partial_update_tag 4
 #define led_control_Envelope_protocol_version_tag 1
 #define led_control_Envelope_request_id_tag      2
 #define led_control_Envelope_get_device_info_tag 10
+#define led_control_Envelope_get_supported_modes_tag 11
+#define led_control_Envelope_get_preset_scenes_tag 12
 #define led_control_Envelope_set_light_config_tag 20
 #define led_control_Envelope_set_channel_order_tag 21
 #define led_control_Envelope_scan_ic_tag         22
 #define led_control_Envelope_set_channel_mode_tag 23
+#define led_control_Envelope_set_device_name_tag 24
 #define led_control_Envelope_set_on_off_tag      30
 #define led_control_Envelope_set_brightness_tag  31
-#define led_control_Envelope_set_color_tag       32
-#define led_control_Envelope_set_static_mode_tag 33
-#define led_control_Envelope_set_preset_effect_tag 34
+#define led_control_Envelope_set_white_brightness_tag 32
+#define led_control_Envelope_set_color_tag       33
+#define led_control_Envelope_set_static_mode_tag 34
+#define led_control_Envelope_set_preset_effect_tag 35
 #define led_control_Envelope_scene_op_tag        40
 #define led_control_Envelope_list_scenes_tag     41
+#define led_control_Envelope_get_custom_scene_tag 42
 #define led_control_Envelope_ota_tag             50
 #define led_control_Envelope_ping_tag            60
 #define led_control_Envelope_factory_reset_tag   61
-#define led_control_Envelope_response_tag        80
-#define led_control_Envelope_state_notify_tag    90
+#define led_control_EnvelopeResponse_request_id_tag 1
+#define led_control_EnvelopeResponse_error_tag   2
+#define led_control_EnvelopeResponse_error_msg_tag 3
+#define led_control_EnvelopeResponse_device_info_result_tag 10
+#define led_control_EnvelopeResponse_supported_modes_result_tag 11
+#define led_control_EnvelopeResponse_preset_scenes_result_tag 12
+#define led_control_EnvelopeResponse_set_light_config_tag 20
+#define led_control_EnvelopeResponse_set_channel_order_tag 21
+#define led_control_EnvelopeResponse_ic_scan_result_tag 22
+#define led_control_EnvelopeResponse_set_channel_mode_result_tag 23
+#define led_control_EnvelopeResponse_set_device_name_result_tag 24
+#define led_control_EnvelopeResponse_scene_op_result_tag 40
+#define led_control_EnvelopeResponse_list_scenes_result_tag 41
+#define led_control_EnvelopeResponse_get_custom_scene_result_tag 42
+#define led_control_EnvelopeResponse_ota_result_tag 50
+#define led_control_EnvelopeResponse_ping_result_tag 60
+#define led_control_EnvelopeResponse_factory_reset_result_tag 61
 
 /* Struct field encoding specification for nanopb */
 #define led_control_ColorRGB_FIELDLIST(X, a) \
@@ -825,9 +1063,17 @@ X(a, STATIC,   SINGULAR, UINT32,   temperature_k,     1)
 #define led_control_ColorTemperature_CALLBACK NULL
 #define led_control_ColorTemperature_DEFAULT NULL
 
+#define led_control_SceneColor_FIELDLIST(X, a) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (color,rgb,color.rgb),   1) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (color,cct,color.cct),   2)
+#define led_control_SceneColor_CALLBACK NULL
+#define led_control_SceneColor_DEFAULT NULL
+#define led_control_SceneColor_color_rgb_MSGTYPE led_control_ColorRGB
+#define led_control_SceneColor_color_cct_MSGTYPE led_control_ColorTemperature
+
 #define led_control_LightConfig_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    device_type,       1) \
-X(a, STATIC,   REPEATED, UINT32,   color_order,       2) \
+X(a, STATIC,   FIXARRAY, UINT32,   color_order,       2) \
 X(a, STATIC,   SINGULAR, UINT32,   led_count,         3)
 #define led_control_LightConfig_CALLBACK NULL
 #define led_control_LightConfig_DEFAULT NULL
@@ -861,49 +1107,109 @@ X(a, STATIC,   OPTIONAL, UINT32,   white_brightness,   6)
 #define led_control_StaticState_cct_MSGTYPE led_control_ColorTemperature
 
 #define led_control_PresetEffect_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    scene_id,          1) \
-X(a, STATIC,   SINGULAR, UINT32,   speed,             2)
+X(a, STATIC,   SINGULAR, UINT32,   scene_id,          1) \
+X(a, STATIC,   SINGULAR, UINT32,   speed,             2) \
+X(a, STATIC,   OPTIONAL, UINT32,   brightness,        3)
 #define led_control_PresetEffect_CALLBACK NULL
 #define led_control_PresetEffect_DEFAULT NULL
+
+#define led_control_CustomSceneSummary_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   scene_id,          1) \
+X(a, STATIC,   OPTIONAL, STRING,   name,              2) \
+X(a, STATIC,   SINGULAR, UINT32,   segment_count,     3) \
+X(a, STATIC,   SINGULAR, UINT32,   global_speed,      4) \
+X(a, STATIC,   OPTIONAL, BOOL,     favorite,          5)
+#define led_control_CustomSceneSummary_CALLBACK NULL
+#define led_control_CustomSceneSummary_DEFAULT NULL
 
 #define led_control_SegmentConfig_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   start_index,       1) \
 X(a, STATIC,   SINGULAR, UINT32,   end_index,         2) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (mode,solid_color,mode.solid_color),   3) \
-X(a, STATIC,   ONEOF,    UENUM,    (mode,effect,mode.effect),   4)
+X(a, STATIC,   SINGULAR, UINT32,   mode,              3) \
+X(a, STATIC,   REPEATED, MESSAGE,  colors,            4) \
+X(a, STATIC,   SINGULAR, UINT32,   speed,             5) \
+X(a, STATIC,   OPTIONAL, UINT32,   brightness,        6) \
+X(a, STATIC,   OPTIONAL, BOOL,     reverse,           7)
 #define led_control_SegmentConfig_CALLBACK NULL
 #define led_control_SegmentConfig_DEFAULT NULL
-#define led_control_SegmentConfig_mode_solid_color_MSGTYPE led_control_ColorRGB
+#define led_control_SegmentConfig_colors_MSGTYPE led_control_SceneColor
 
 #define led_control_CustomScene_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   scene_id,          1) \
-X(a, STATIC,   SINGULAR, STRING,   name,              2) \
+X(a, STATIC,   OPTIONAL, STRING,   name,              2) \
 X(a, STATIC,   SINGULAR, UINT32,   segment_count,     3) \
 X(a, STATIC,   REPEATED, MESSAGE,  segments,          4) \
-X(a, STATIC,   SINGULAR, UINT32,   global_speed,      5)
+X(a, STATIC,   SINGULAR, UINT32,   global_speed,      5) \
+X(a, STATIC,   OPTIONAL, BOOL,     favorite,          6) \
+X(a, STATIC,   OPTIONAL, UINT32,   preset_scene_id,   7)
 #define led_control_CustomScene_CALLBACK NULL
 #define led_control_CustomScene_DEFAULT NULL
 #define led_control_CustomScene_segments_MSGTYPE led_control_SegmentConfig
 
+#define led_control_ModeInfo_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   id,                1) \
+X(a, STATIC,   SINGULAR, STRING,   name,              2) \
+X(a, STATIC,   SINGULAR, UINT32,   min_colors,        3) \
+X(a, STATIC,   SINGULAR, UINT32,   max_colors,        4)
+#define led_control_ModeInfo_CALLBACK NULL
+#define led_control_ModeInfo_DEFAULT NULL
+
+#define led_control_GetSupportedModesRequest_FIELDLIST(X, a) \
+
+#define led_control_GetSupportedModesRequest_CALLBACK NULL
+#define led_control_GetSupportedModesRequest_DEFAULT NULL
+
+#define led_control_GetSupportedModesResponse_FIELDLIST(X, a) \
+X(a, STATIC,   REPEATED, MESSAGE,  modes,             1)
+#define led_control_GetSupportedModesResponse_CALLBACK NULL
+#define led_control_GetSupportedModesResponse_DEFAULT NULL
+#define led_control_GetSupportedModesResponse_modes_MSGTYPE led_control_ModeInfo
+
+#define led_control_PresetSceneSummary_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   id,                1) \
+X(a, STATIC,   SINGULAR, STRING,   name,              2)
+#define led_control_PresetSceneSummary_CALLBACK NULL
+#define led_control_PresetSceneSummary_DEFAULT NULL
+
+#define led_control_GetPresetScenesRequest_FIELDLIST(X, a) \
+
+#define led_control_GetPresetScenesRequest_CALLBACK NULL
+#define led_control_GetPresetScenesRequest_DEFAULT NULL
+
+#define led_control_GetPresetScenesResponse_FIELDLIST(X, a) \
+X(a, STATIC,   REPEATED, MESSAGE,  scenes,            1)
+#define led_control_GetPresetScenesResponse_CALLBACK NULL
+#define led_control_GetPresetScenesResponse_DEFAULT NULL
+#define led_control_GetPresetScenesResponse_scenes_MSGTYPE led_control_PresetSceneSummary
+
 #define led_control_DeviceStatus_FIELDLIST(X, a) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (current_effect,static_state,current_effect.static_state),   1) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (current_effect,preset_effect,current_effect.preset_effect),   2) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (current_effect,custom_scene,current_effect.custom_scene),   3)
+X(a, STATIC,   SINGULAR, UENUM,    current_mode,      1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  static_state,      2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  preset_effect,     3) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  custom_scene_summary,   4)
 #define led_control_DeviceStatus_CALLBACK NULL
 #define led_control_DeviceStatus_DEFAULT NULL
-#define led_control_DeviceStatus_current_effect_static_state_MSGTYPE led_control_StaticState
-#define led_control_DeviceStatus_current_effect_preset_effect_MSGTYPE led_control_PresetEffect
-#define led_control_DeviceStatus_current_effect_custom_scene_MSGTYPE led_control_CustomScene
+#define led_control_DeviceStatus_static_state_MSGTYPE led_control_StaticState
+#define led_control_DeviceStatus_preset_effect_MSGTYPE led_control_PresetEffect
+#define led_control_DeviceStatus_custom_scene_summary_MSGTYPE led_control_CustomSceneSummary
+
+#define led_control_SceneSummary_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   id,                1) \
+X(a, STATIC,   OPTIONAL, STRING,   name,              2) \
+X(a, STATIC,   SINGULAR, BOOL,     favorite,          3)
+#define led_control_SceneSummary_CALLBACK NULL
+#define led_control_SceneSummary_DEFAULT NULL
 
 #define led_control_GetDeviceInfoRequest_FIELDLIST(X, a) \
-
+X(a, STATIC,   SINGULAR, UENUM,    type,              1)
 #define led_control_GetDeviceInfoRequest_CALLBACK NULL
 #define led_control_GetDeviceInfoRequest_DEFAULT NULL
 
 #define led_control_GetDeviceInfoResponse_FIELDLIST(X, a) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  info,              1) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  config,            2) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  status,            3)
+X(a, STATIC,   SINGULAR, UENUM,    type,              1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  info,             10) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  config,           11) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  status,           12)
 #define led_control_GetDeviceInfoResponse_CALLBACK NULL
 #define led_control_GetDeviceInfoResponse_DEFAULT NULL
 #define led_control_GetDeviceInfoResponse_info_MSGTYPE led_control_DeviceInfo
@@ -924,8 +1230,8 @@ X(a, STATIC,   SINGULAR, BOOL,     restart_required,   3)
 #define led_control_SetLightConfigResponse_DEFAULT NULL
 
 #define led_control_SetCustomChannelOrderRequest_FIELDLIST(X, a) \
-X(a, CALLBACK, REPEATED, UINT32,   order,             1)
-#define led_control_SetCustomChannelOrderRequest_CALLBACK pb_default_field_callback
+X(a, STATIC,   FIXARRAY, UINT32,   order,             1)
+#define led_control_SetCustomChannelOrderRequest_CALLBACK NULL
 #define led_control_SetCustomChannelOrderRequest_DEFAULT NULL
 
 #define led_control_SetCustomChannelOrderResponse_FIELDLIST(X, a) \
@@ -959,25 +1265,81 @@ X(a, STATIC,   SINGULAR, STRING,   error_msg,         2)
 #define led_control_SetChannelModeResponse_CALLBACK NULL
 #define led_control_SetChannelModeResponse_DEFAULT NULL
 
+#define led_control_SetDeviceNameRequest_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, STRING,   name,              1)
+#define led_control_SetDeviceNameRequest_CALLBACK NULL
+#define led_control_SetDeviceNameRequest_DEFAULT NULL
+
+#define led_control_SetDeviceNameResponse_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    error,             1) \
+X(a, STATIC,   SINGULAR, STRING,   error_msg,         2)
+#define led_control_SetDeviceNameResponse_CALLBACK NULL
+#define led_control_SetDeviceNameResponse_DEFAULT NULL
+
+#define led_control_SceneOperationRequest_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    op,                1) \
+X(a, STATIC,   SINGULAR, UINT32,   scene_id,          2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  scene,             3)
+#define led_control_SceneOperationRequest_CALLBACK NULL
+#define led_control_SceneOperationRequest_DEFAULT NULL
+#define led_control_SceneOperationRequest_scene_MSGTYPE led_control_CustomScene
+
+#define led_control_SceneOperationResponse_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    error,             1) \
+X(a, STATIC,   SINGULAR, STRING,   error_msg,         2) \
+X(a, STATIC,   OPTIONAL, UINT32,   scene_id,          3)
+#define led_control_SceneOperationResponse_CALLBACK NULL
+#define led_control_SceneOperationResponse_DEFAULT NULL
+
+#define led_control_GetCustomSceneRequest_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   scene_id,          1) \
+X(a, STATIC,   OPTIONAL, UINT32,   segment_offset,    2) \
+X(a, STATIC,   OPTIONAL, UINT32,   segment_limit,     3)
+#define led_control_GetCustomSceneRequest_CALLBACK NULL
+#define led_control_GetCustomSceneRequest_DEFAULT NULL
+
+#define led_control_GetCustomSceneResponse_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UENUM,    error,             1) \
+X(a, STATIC,   SINGULAR, STRING,   error_msg,         2) \
+X(a, STATIC,   SINGULAR, UINT32,   scene_id,          3) \
+X(a, STATIC,   OPTIONAL, STRING,   name,              4) \
+X(a, STATIC,   SINGULAR, UINT32,   total_segments,    5) \
+X(a, STATIC,   SINGULAR, UINT32,   global_speed,      6) \
+X(a, STATIC,   REPEATED, MESSAGE,  segments,          7) \
+X(a, STATIC,   SINGULAR, BOOL,     has_more,          8) \
+X(a, STATIC,   OPTIONAL, BOOL,     favorite,          9)
+#define led_control_GetCustomSceneResponse_CALLBACK NULL
+#define led_control_GetCustomSceneResponse_DEFAULT NULL
+#define led_control_GetCustomSceneResponse_segments_MSGTYPE led_control_SegmentConfig
+
+#define led_control_ListScenesRequest_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   offset,            1) \
+X(a, STATIC,   OPTIONAL, UINT32,   limit,             2)
+#define led_control_ListScenesRequest_CALLBACK NULL
+#define led_control_ListScenesRequest_DEFAULT NULL
+
+#define led_control_ListScenesResponse_FIELDLIST(X, a) \
+X(a, STATIC,   REPEATED, MESSAGE,  scenes,            1) \
+X(a, STATIC,   SINGULAR, UINT32,   total_count,       2) \
+X(a, STATIC,   SINGULAR, BOOL,     has_more,          3)
+#define led_control_ListScenesResponse_CALLBACK NULL
+#define led_control_ListScenesResponse_DEFAULT NULL
+#define led_control_ListScenesResponse_scenes_MSGTYPE led_control_SceneSummary
+
 #define led_control_SetOnOffRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, BOOL,     power,             1)
 #define led_control_SetOnOffRequest_CALLBACK NULL
 #define led_control_SetOnOffRequest_DEFAULT NULL
-
-#define led_control_SetOnOffResponse_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    error,             1)
-#define led_control_SetOnOffResponse_CALLBACK NULL
-#define led_control_SetOnOffResponse_DEFAULT NULL
 
 #define led_control_SetBrightnessRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   brightness,        1)
 #define led_control_SetBrightnessRequest_CALLBACK NULL
 #define led_control_SetBrightnessRequest_DEFAULT NULL
 
-#define led_control_SetBrightnessResponse_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    error,             1)
-#define led_control_SetBrightnessResponse_CALLBACK NULL
-#define led_control_SetBrightnessResponse_DEFAULT NULL
+#define led_control_SetWhiteBrightnessRequest_FIELDLIST(X, a) \
+X(a, STATIC,   SINGULAR, UINT32,   white_brightness,   1)
+#define led_control_SetWhiteBrightnessRequest_CALLBACK NULL
+#define led_control_SetWhiteBrightnessRequest_DEFAULT NULL
 
 #define led_control_SetColorRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UENUM,    mode,              1) \
@@ -989,11 +1351,6 @@ X(a, STATIC,   OPTIONAL, UINT32,   white_brightness,   5)
 #define led_control_SetColorRequest_DEFAULT NULL
 #define led_control_SetColorRequest_rgb_MSGTYPE led_control_ColorRGB
 #define led_control_SetColorRequest_cct_MSGTYPE led_control_ColorTemperature
-
-#define led_control_SetColorResponse_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    error,             1)
-#define led_control_SetColorResponse_CALLBACK NULL
-#define led_control_SetColorResponse_DEFAULT NULL
 
 #define led_control_SetStaticModeRequest_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, BOOL,     power,             1) \
@@ -1007,64 +1364,12 @@ X(a, STATIC,   OPTIONAL, UINT32,   white_brightness,   6)
 #define led_control_SetStaticModeRequest_color_rgb_MSGTYPE led_control_ColorRGB
 #define led_control_SetStaticModeRequest_color_cct_MSGTYPE led_control_ColorTemperature
 
-#define led_control_SetStaticModeResponse_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    error,             1)
-#define led_control_SetStaticModeResponse_CALLBACK NULL
-#define led_control_SetStaticModeResponse_DEFAULT NULL
-
 #define led_control_SetPresetEffectRequest_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    effect,            1) \
+X(a, STATIC,   SINGULAR, UINT32,   scene_id,          1) \
 X(a, STATIC,   SINGULAR, UINT32,   speed,             2) \
 X(a, STATIC,   SINGULAR, UINT32,   brightness,        3)
 #define led_control_SetPresetEffectRequest_CALLBACK NULL
 #define led_control_SetPresetEffectRequest_DEFAULT NULL
-
-#define led_control_SetPresetEffectResponse_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    error,             1)
-#define led_control_SetPresetEffectResponse_CALLBACK NULL
-#define led_control_SetPresetEffectResponse_DEFAULT NULL
-
-#define led_control_SceneOperationRequest_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    op,                1) \
-X(a, STATIC,   SINGULAR, UINT32,   scene_id,          2) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  scene,             3)
-#define led_control_SceneOperationRequest_CALLBACK NULL
-#define led_control_SceneOperationRequest_DEFAULT NULL
-#define led_control_SceneOperationRequest_scene_MSGTYPE led_control_CustomScene
-
-#define led_control_SceneOperationResponse_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UENUM,    error,             1) \
-X(a, STATIC,   SINGULAR, STRING,   error_msg,         2)
-#define led_control_SceneOperationResponse_CALLBACK NULL
-#define led_control_SceneOperationResponse_DEFAULT NULL
-
-#define led_control_ListScenesRequest_FIELDLIST(X, a) \
-
-#define led_control_ListScenesRequest_CALLBACK NULL
-#define led_control_ListScenesRequest_DEFAULT NULL
-
-#define led_control_ListScenesResponse_FIELDLIST(X, a) \
-X(a, STATIC,   REPEATED, MESSAGE,  scenes,            1)
-#define led_control_ListScenesResponse_CALLBACK NULL
-#define led_control_ListScenesResponse_DEFAULT NULL
-#define led_control_ListScenesResponse_scenes_MSGTYPE led_control_SceneSummary
-
-#define led_control_SceneSummary_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   id,                1) \
-X(a, STATIC,   SINGULAR, STRING,   name,              2)
-#define led_control_SceneSummary_CALLBACK NULL
-#define led_control_SceneSummary_DEFAULT NULL
-
-#define led_control_StateNotification_FIELDLIST(X, a) \
-X(a, STATIC,   SINGULAR, UINT32,   changed_fields,    1) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  static_state,      2) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  preset_effect,     3) \
-X(a, STATIC,   OPTIONAL, MESSAGE,  custom_scene,      4)
-#define led_control_StateNotification_CALLBACK NULL
-#define led_control_StateNotification_DEFAULT NULL
-#define led_control_StateNotification_static_state_MSGTYPE led_control_StaticState
-#define led_control_StateNotification_preset_effect_MSGTYPE led_control_PresetEffect
-#define led_control_StateNotification_custom_scene_MSGTYPE led_control_CustomScene
 
 #define led_control_OTAStartParams_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   total_size,        1) \
@@ -1119,92 +1424,145 @@ X(a, STATIC,   SINGULAR, UENUM,    error,             1)
 #define led_control_FactoryResetResponse_CALLBACK NULL
 #define led_control_FactoryResetResponse_DEFAULT NULL
 
+#define led_control_StaticStatePatch_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, BOOL,     power,             1) \
+X(a, STATIC,   OPTIONAL, UINT32,   brightness,        2) \
+X(a, STATIC,   OPTIONAL, UENUM,    color_mode,        3) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  rgb,               4) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  cct,               5) \
+X(a, STATIC,   OPTIONAL, UINT32,   white_brightness,   6)
+#define led_control_StaticStatePatch_CALLBACK NULL
+#define led_control_StaticStatePatch_DEFAULT NULL
+#define led_control_StaticStatePatch_rgb_MSGTYPE led_control_ColorRGB
+#define led_control_StaticStatePatch_cct_MSGTYPE led_control_ColorTemperature
+
+#define led_control_PresetEffectPatch_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   scene_id,          1) \
+X(a, STATIC,   OPTIONAL, UINT32,   speed,             2) \
+X(a, STATIC,   OPTIONAL, UINT32,   brightness,        3)
+#define led_control_PresetEffectPatch_CALLBACK NULL
+#define led_control_PresetEffectPatch_DEFAULT NULL
+
+#define led_control_PartialStatusUpdate_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UENUM,    current_mode,      1) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  static_state_patch,   2) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  preset_effect_patch,   3) \
+X(a, STATIC,   OPTIONAL, MESSAGE,  custom_scene_summary,   4)
+#define led_control_PartialStatusUpdate_CALLBACK NULL
+#define led_control_PartialStatusUpdate_DEFAULT NULL
+#define led_control_PartialStatusUpdate_static_state_patch_MSGTYPE led_control_StaticStatePatch
+#define led_control_PartialStatusUpdate_preset_effect_patch_MSGTYPE led_control_PresetEffectPatch
+#define led_control_PartialStatusUpdate_custom_scene_summary_MSGTYPE led_control_CustomSceneSummary
+
+#define led_control_StateNotification_FIELDLIST(X, a) \
+X(a, STATIC,   OPTIONAL, UINT32,   source_cmd_id,     1) \
+X(a, STATIC,   SINGULAR, UENUM,    update_type,       2) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,full_status,payload.full_status),   3) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,partial_update,payload.partial_update),   4)
+#define led_control_StateNotification_CALLBACK NULL
+#define led_control_StateNotification_DEFAULT NULL
+#define led_control_StateNotification_payload_full_status_MSGTYPE led_control_DeviceStatus
+#define led_control_StateNotification_payload_partial_update_MSGTYPE led_control_PartialStatusUpdate
+
 #define led_control_Envelope_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   protocol_version,   1) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        2) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,get_device_info,payload.get_device_info),  10) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,get_supported_modes,payload.get_supported_modes),  11) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,get_preset_scenes,payload.get_preset_scenes),  12) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_light_config,payload.set_light_config),  20) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_channel_order,payload.set_channel_order),  21) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,scan_ic,payload.scan_ic),  22) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_channel_mode,payload.set_channel_mode),  23) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_device_name,payload.set_device_name),  24) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_on_off,payload.set_on_off),  30) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_brightness,payload.set_brightness),  31) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_color,payload.set_color),  32) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_static_mode,payload.set_static_mode),  33) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_preset_effect,payload.set_preset_effect),  34) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_white_brightness,payload.set_white_brightness),  32) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_color,payload.set_color),  33) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_static_mode,payload.set_static_mode),  34) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,set_preset_effect,payload.set_preset_effect),  35) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,scene_op,payload.scene_op),  40) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,list_scenes,payload.list_scenes),  41) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,get_custom_scene,payload.get_custom_scene),  42) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ota,payload.ota),  50) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (payload,ping,payload.ping),  60) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,factory_reset,payload.factory_reset),  61) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,response,payload.response),  80) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (payload,state_notify,payload.state_notify),  90)
+X(a, STATIC,   ONEOF,    MESSAGE,  (payload,factory_reset,payload.factory_reset),  61)
 #define led_control_Envelope_CALLBACK NULL
 #define led_control_Envelope_DEFAULT NULL
 #define led_control_Envelope_payload_get_device_info_MSGTYPE led_control_GetDeviceInfoRequest
+#define led_control_Envelope_payload_get_supported_modes_MSGTYPE led_control_GetSupportedModesRequest
+#define led_control_Envelope_payload_get_preset_scenes_MSGTYPE led_control_GetPresetScenesRequest
 #define led_control_Envelope_payload_set_light_config_MSGTYPE led_control_SetLightConfigRequest
 #define led_control_Envelope_payload_set_channel_order_MSGTYPE led_control_SetCustomChannelOrderRequest
 #define led_control_Envelope_payload_scan_ic_MSGTYPE led_control_ScanIcRequest
 #define led_control_Envelope_payload_set_channel_mode_MSGTYPE led_control_SetChannelModeRequest
+#define led_control_Envelope_payload_set_device_name_MSGTYPE led_control_SetDeviceNameRequest
 #define led_control_Envelope_payload_set_on_off_MSGTYPE led_control_SetOnOffRequest
 #define led_control_Envelope_payload_set_brightness_MSGTYPE led_control_SetBrightnessRequest
+#define led_control_Envelope_payload_set_white_brightness_MSGTYPE led_control_SetWhiteBrightnessRequest
 #define led_control_Envelope_payload_set_color_MSGTYPE led_control_SetColorRequest
 #define led_control_Envelope_payload_set_static_mode_MSGTYPE led_control_SetStaticModeRequest
 #define led_control_Envelope_payload_set_preset_effect_MSGTYPE led_control_SetPresetEffectRequest
 #define led_control_Envelope_payload_scene_op_MSGTYPE led_control_SceneOperationRequest
 #define led_control_Envelope_payload_list_scenes_MSGTYPE led_control_ListScenesRequest
+#define led_control_Envelope_payload_get_custom_scene_MSGTYPE led_control_GetCustomSceneRequest
 #define led_control_Envelope_payload_ota_MSGTYPE led_control_OTARequest
 #define led_control_Envelope_payload_ping_MSGTYPE led_control_PingRequest
 #define led_control_Envelope_payload_factory_reset_MSGTYPE led_control_FactoryResetRequest
-#define led_control_Envelope_payload_response_MSGTYPE led_control_EnvelopeResponse
-#define led_control_Envelope_payload_state_notify_MSGTYPE led_control_StateNotification
 
 #define led_control_EnvelopeResponse_FIELDLIST(X, a) \
 X(a, STATIC,   SINGULAR, UINT32,   request_id,        1) \
 X(a, STATIC,   SINGULAR, UENUM,    error,             2) \
 X(a, STATIC,   SINGULAR, STRING,   error_msg,         3) \
 X(a, STATIC,   ONEOF,    MESSAGE,  (result,device_info_result,result.device_info_result),  10) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_light_config,result.set_light_config),  11) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_channel_order,result.set_channel_order),  12) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_channel_mode_result,result.set_channel_mode_result),  13) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,ic_scan_result,result.ic_scan_result),  14) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_on_off_result,result.set_on_off_result),  20) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_brightness_result,result.set_brightness_result),  21) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_color_result,result.set_color_result),  22) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_static_result,result.set_static_result),  23) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_preset_result,result.set_preset_result),  24) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,scene_op_result,result.scene_op_result),  30) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,list_scenes_result,result.list_scenes_result),  31) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,ota_result,result.ota_result),  40) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,ping_result,result.ping_result),  50) \
-X(a, STATIC,   ONEOF,    MESSAGE,  (result,factory_reset_result,result.factory_reset_result),  51)
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,supported_modes_result,result.supported_modes_result),  11) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,preset_scenes_result,result.preset_scenes_result),  12) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_light_config,result.set_light_config),  20) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_channel_order,result.set_channel_order),  21) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,ic_scan_result,result.ic_scan_result),  22) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_channel_mode_result,result.set_channel_mode_result),  23) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,set_device_name_result,result.set_device_name_result),  24) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,scene_op_result,result.scene_op_result),  40) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,list_scenes_result,result.list_scenes_result),  41) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,get_custom_scene_result,result.get_custom_scene_result),  42) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,ota_result,result.ota_result),  50) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,ping_result,result.ping_result),  60) \
+X(a, STATIC,   ONEOF,    MESSAGE,  (result,factory_reset_result,result.factory_reset_result),  61)
 #define led_control_EnvelopeResponse_CALLBACK NULL
 #define led_control_EnvelopeResponse_DEFAULT NULL
 #define led_control_EnvelopeResponse_result_device_info_result_MSGTYPE led_control_GetDeviceInfoResponse
+#define led_control_EnvelopeResponse_result_supported_modes_result_MSGTYPE led_control_GetSupportedModesResponse
+#define led_control_EnvelopeResponse_result_preset_scenes_result_MSGTYPE led_control_GetPresetScenesResponse
 #define led_control_EnvelopeResponse_result_set_light_config_MSGTYPE led_control_SetLightConfigResponse
 #define led_control_EnvelopeResponse_result_set_channel_order_MSGTYPE led_control_SetCustomChannelOrderResponse
-#define led_control_EnvelopeResponse_result_set_channel_mode_result_MSGTYPE led_control_SetChannelModeResponse
 #define led_control_EnvelopeResponse_result_ic_scan_result_MSGTYPE led_control_IcScanResult
-#define led_control_EnvelopeResponse_result_set_on_off_result_MSGTYPE led_control_SetOnOffResponse
-#define led_control_EnvelopeResponse_result_set_brightness_result_MSGTYPE led_control_SetBrightnessResponse
-#define led_control_EnvelopeResponse_result_set_color_result_MSGTYPE led_control_SetColorResponse
-#define led_control_EnvelopeResponse_result_set_static_result_MSGTYPE led_control_SetStaticModeResponse
-#define led_control_EnvelopeResponse_result_set_preset_result_MSGTYPE led_control_SetPresetEffectResponse
+#define led_control_EnvelopeResponse_result_set_channel_mode_result_MSGTYPE led_control_SetChannelModeResponse
+#define led_control_EnvelopeResponse_result_set_device_name_result_MSGTYPE led_control_SetDeviceNameResponse
 #define led_control_EnvelopeResponse_result_scene_op_result_MSGTYPE led_control_SceneOperationResponse
 #define led_control_EnvelopeResponse_result_list_scenes_result_MSGTYPE led_control_ListScenesResponse
+#define led_control_EnvelopeResponse_result_get_custom_scene_result_MSGTYPE led_control_GetCustomSceneResponse
 #define led_control_EnvelopeResponse_result_ota_result_MSGTYPE led_control_OTAResponse
 #define led_control_EnvelopeResponse_result_ping_result_MSGTYPE led_control_PingResponse
 #define led_control_EnvelopeResponse_result_factory_reset_result_MSGTYPE led_control_FactoryResetResponse
 
 extern const pb_msgdesc_t led_control_ColorRGB_msg;
 extern const pb_msgdesc_t led_control_ColorTemperature_msg;
+extern const pb_msgdesc_t led_control_SceneColor_msg;
 extern const pb_msgdesc_t led_control_LightConfig_msg;
 extern const pb_msgdesc_t led_control_DeviceInfo_msg;
 extern const pb_msgdesc_t led_control_StaticState_msg;
 extern const pb_msgdesc_t led_control_PresetEffect_msg;
+extern const pb_msgdesc_t led_control_CustomSceneSummary_msg;
 extern const pb_msgdesc_t led_control_SegmentConfig_msg;
 extern const pb_msgdesc_t led_control_CustomScene_msg;
+extern const pb_msgdesc_t led_control_ModeInfo_msg;
+extern const pb_msgdesc_t led_control_GetSupportedModesRequest_msg;
+extern const pb_msgdesc_t led_control_GetSupportedModesResponse_msg;
+extern const pb_msgdesc_t led_control_PresetSceneSummary_msg;
+extern const pb_msgdesc_t led_control_GetPresetScenesRequest_msg;
+extern const pb_msgdesc_t led_control_GetPresetScenesResponse_msg;
 extern const pb_msgdesc_t led_control_DeviceStatus_msg;
+extern const pb_msgdesc_t led_control_SceneSummary_msg;
 extern const pb_msgdesc_t led_control_GetDeviceInfoRequest_msg;
 extern const pb_msgdesc_t led_control_GetDeviceInfoResponse_msg;
 extern const pb_msgdesc_t led_control_SetLightConfigRequest_msg;
@@ -1215,22 +1573,20 @@ extern const pb_msgdesc_t led_control_ScanIcRequest_msg;
 extern const pb_msgdesc_t led_control_IcScanResult_msg;
 extern const pb_msgdesc_t led_control_SetChannelModeRequest_msg;
 extern const pb_msgdesc_t led_control_SetChannelModeResponse_msg;
-extern const pb_msgdesc_t led_control_SetOnOffRequest_msg;
-extern const pb_msgdesc_t led_control_SetOnOffResponse_msg;
-extern const pb_msgdesc_t led_control_SetBrightnessRequest_msg;
-extern const pb_msgdesc_t led_control_SetBrightnessResponse_msg;
-extern const pb_msgdesc_t led_control_SetColorRequest_msg;
-extern const pb_msgdesc_t led_control_SetColorResponse_msg;
-extern const pb_msgdesc_t led_control_SetStaticModeRequest_msg;
-extern const pb_msgdesc_t led_control_SetStaticModeResponse_msg;
-extern const pb_msgdesc_t led_control_SetPresetEffectRequest_msg;
-extern const pb_msgdesc_t led_control_SetPresetEffectResponse_msg;
+extern const pb_msgdesc_t led_control_SetDeviceNameRequest_msg;
+extern const pb_msgdesc_t led_control_SetDeviceNameResponse_msg;
 extern const pb_msgdesc_t led_control_SceneOperationRequest_msg;
 extern const pb_msgdesc_t led_control_SceneOperationResponse_msg;
+extern const pb_msgdesc_t led_control_GetCustomSceneRequest_msg;
+extern const pb_msgdesc_t led_control_GetCustomSceneResponse_msg;
 extern const pb_msgdesc_t led_control_ListScenesRequest_msg;
 extern const pb_msgdesc_t led_control_ListScenesResponse_msg;
-extern const pb_msgdesc_t led_control_SceneSummary_msg;
-extern const pb_msgdesc_t led_control_StateNotification_msg;
+extern const pb_msgdesc_t led_control_SetOnOffRequest_msg;
+extern const pb_msgdesc_t led_control_SetBrightnessRequest_msg;
+extern const pb_msgdesc_t led_control_SetWhiteBrightnessRequest_msg;
+extern const pb_msgdesc_t led_control_SetColorRequest_msg;
+extern const pb_msgdesc_t led_control_SetStaticModeRequest_msg;
+extern const pb_msgdesc_t led_control_SetPresetEffectRequest_msg;
 extern const pb_msgdesc_t led_control_OTAStartParams_msg;
 extern const pb_msgdesc_t led_control_OTADataParams_msg;
 extern const pb_msgdesc_t led_control_OTARequest_msg;
@@ -1239,19 +1595,32 @@ extern const pb_msgdesc_t led_control_PingRequest_msg;
 extern const pb_msgdesc_t led_control_PingResponse_msg;
 extern const pb_msgdesc_t led_control_FactoryResetRequest_msg;
 extern const pb_msgdesc_t led_control_FactoryResetResponse_msg;
+extern const pb_msgdesc_t led_control_StaticStatePatch_msg;
+extern const pb_msgdesc_t led_control_PresetEffectPatch_msg;
+extern const pb_msgdesc_t led_control_PartialStatusUpdate_msg;
+extern const pb_msgdesc_t led_control_StateNotification_msg;
 extern const pb_msgdesc_t led_control_Envelope_msg;
 extern const pb_msgdesc_t led_control_EnvelopeResponse_msg;
 
 /* Defines for backwards compatibility with code written before nanopb-0.4.0 */
 #define led_control_ColorRGB_fields &led_control_ColorRGB_msg
 #define led_control_ColorTemperature_fields &led_control_ColorTemperature_msg
+#define led_control_SceneColor_fields &led_control_SceneColor_msg
 #define led_control_LightConfig_fields &led_control_LightConfig_msg
 #define led_control_DeviceInfo_fields &led_control_DeviceInfo_msg
 #define led_control_StaticState_fields &led_control_StaticState_msg
 #define led_control_PresetEffect_fields &led_control_PresetEffect_msg
+#define led_control_CustomSceneSummary_fields &led_control_CustomSceneSummary_msg
 #define led_control_SegmentConfig_fields &led_control_SegmentConfig_msg
 #define led_control_CustomScene_fields &led_control_CustomScene_msg
+#define led_control_ModeInfo_fields &led_control_ModeInfo_msg
+#define led_control_GetSupportedModesRequest_fields &led_control_GetSupportedModesRequest_msg
+#define led_control_GetSupportedModesResponse_fields &led_control_GetSupportedModesResponse_msg
+#define led_control_PresetSceneSummary_fields &led_control_PresetSceneSummary_msg
+#define led_control_GetPresetScenesRequest_fields &led_control_GetPresetScenesRequest_msg
+#define led_control_GetPresetScenesResponse_fields &led_control_GetPresetScenesResponse_msg
 #define led_control_DeviceStatus_fields &led_control_DeviceStatus_msg
+#define led_control_SceneSummary_fields &led_control_SceneSummary_msg
 #define led_control_GetDeviceInfoRequest_fields &led_control_GetDeviceInfoRequest_msg
 #define led_control_GetDeviceInfoResponse_fields &led_control_GetDeviceInfoResponse_msg
 #define led_control_SetLightConfigRequest_fields &led_control_SetLightConfigRequest_msg
@@ -1262,22 +1631,20 @@ extern const pb_msgdesc_t led_control_EnvelopeResponse_msg;
 #define led_control_IcScanResult_fields &led_control_IcScanResult_msg
 #define led_control_SetChannelModeRequest_fields &led_control_SetChannelModeRequest_msg
 #define led_control_SetChannelModeResponse_fields &led_control_SetChannelModeResponse_msg
-#define led_control_SetOnOffRequest_fields &led_control_SetOnOffRequest_msg
-#define led_control_SetOnOffResponse_fields &led_control_SetOnOffResponse_msg
-#define led_control_SetBrightnessRequest_fields &led_control_SetBrightnessRequest_msg
-#define led_control_SetBrightnessResponse_fields &led_control_SetBrightnessResponse_msg
-#define led_control_SetColorRequest_fields &led_control_SetColorRequest_msg
-#define led_control_SetColorResponse_fields &led_control_SetColorResponse_msg
-#define led_control_SetStaticModeRequest_fields &led_control_SetStaticModeRequest_msg
-#define led_control_SetStaticModeResponse_fields &led_control_SetStaticModeResponse_msg
-#define led_control_SetPresetEffectRequest_fields &led_control_SetPresetEffectRequest_msg
-#define led_control_SetPresetEffectResponse_fields &led_control_SetPresetEffectResponse_msg
+#define led_control_SetDeviceNameRequest_fields &led_control_SetDeviceNameRequest_msg
+#define led_control_SetDeviceNameResponse_fields &led_control_SetDeviceNameResponse_msg
 #define led_control_SceneOperationRequest_fields &led_control_SceneOperationRequest_msg
 #define led_control_SceneOperationResponse_fields &led_control_SceneOperationResponse_msg
+#define led_control_GetCustomSceneRequest_fields &led_control_GetCustomSceneRequest_msg
+#define led_control_GetCustomSceneResponse_fields &led_control_GetCustomSceneResponse_msg
 #define led_control_ListScenesRequest_fields &led_control_ListScenesRequest_msg
 #define led_control_ListScenesResponse_fields &led_control_ListScenesResponse_msg
-#define led_control_SceneSummary_fields &led_control_SceneSummary_msg
-#define led_control_StateNotification_fields &led_control_StateNotification_msg
+#define led_control_SetOnOffRequest_fields &led_control_SetOnOffRequest_msg
+#define led_control_SetBrightnessRequest_fields &led_control_SetBrightnessRequest_msg
+#define led_control_SetWhiteBrightnessRequest_fields &led_control_SetWhiteBrightnessRequest_msg
+#define led_control_SetColorRequest_fields &led_control_SetColorRequest_msg
+#define led_control_SetStaticModeRequest_fields &led_control_SetStaticModeRequest_msg
+#define led_control_SetPresetEffectRequest_fields &led_control_SetPresetEffectRequest_msg
 #define led_control_OTAStartParams_fields &led_control_OTAStartParams_msg
 #define led_control_OTADataParams_fields &led_control_OTADataParams_msg
 #define led_control_OTARequest_fields &led_control_OTARequest_msg
@@ -1286,55 +1653,70 @@ extern const pb_msgdesc_t led_control_EnvelopeResponse_msg;
 #define led_control_PingResponse_fields &led_control_PingResponse_msg
 #define led_control_FactoryResetRequest_fields &led_control_FactoryResetRequest_msg
 #define led_control_FactoryResetResponse_fields &led_control_FactoryResetResponse_msg
+#define led_control_StaticStatePatch_fields &led_control_StaticStatePatch_msg
+#define led_control_PresetEffectPatch_fields &led_control_PresetEffectPatch_msg
+#define led_control_PartialStatusUpdate_fields &led_control_PartialStatusUpdate_msg
+#define led_control_StateNotification_fields &led_control_StateNotification_msg
 #define led_control_Envelope_fields &led_control_Envelope_msg
 #define led_control_EnvelopeResponse_fields &led_control_EnvelopeResponse_msg
 
 /* Maximum encoded size of messages (where known) */
-/* led_control_SetCustomChannelOrderRequest_size depends on runtime parameters */
-/* led_control_Envelope_size depends on runtime parameters */
 #define LED_CONTROL_LED_CONTROL_PB_H_MAX_SIZE    led_control_EnvelopeResponse_size
 #define led_control_ColorRGB_size                18
 #define led_control_ColorTemperature_size        6
-#define led_control_CustomScene_size             392
-#define led_control_DeviceInfo_size              148
-#define led_control_DeviceStatus_size            395
-#define led_control_EnvelopeResponse_size        2382
+#define led_control_CustomSceneSummary_size      45
+#define led_control_CustomScene_size             851
+#define led_control_DeviceInfo_size              108
+#define led_control_DeviceStatus_size            115
+#define led_control_EnvelopeResponse_size        4176
+#define led_control_Envelope_size                878
 #define led_control_FactoryResetRequest_size     6
 #define led_control_FactoryResetResponse_size    2
-#define led_control_GetDeviceInfoRequest_size    0
-#define led_control_GetDeviceInfoResponse_size   589
+#define led_control_GetCustomSceneRequest_size   18
+#define led_control_GetCustomSceneResponse_size  914
+#define led_control_GetDeviceInfoRequest_size    2
+#define led_control_GetDeviceInfoResponse_size   269
+#define led_control_GetPresetScenesRequest_size  0
+#define led_control_GetPresetScenesResponse_size 4100
+#define led_control_GetSupportedModesRequest_size 0
+#define led_control_GetSupportedModesResponse_size 2650
 #define led_control_IcScanResult_size            6
 #define led_control_LightConfig_size             38
-#define led_control_ListScenesRequest_size       0
-#define led_control_ListScenesResponse_size      1344
-#define led_control_OTADataParams_size           1009
-#define led_control_OTARequest_size              1014
-#define led_control_OTAResponse_size             88
+#define led_control_ListScenesRequest_size       12
+#define led_control_ListScenesResponse_size      309
+#define led_control_ModeInfo_size                51
+#define led_control_OTADataParams_size           489
+#define led_control_OTARequest_size              494
+#define led_control_OTAResponse_size             87
 #define led_control_OTAStartParams_size          18
+#define led_control_PartialStatusUpdate_size     115
 #define led_control_PingRequest_size             11
 #define led_control_PingResponse_size            22
-#define led_control_PresetEffect_size            8
+#define led_control_PresetEffectPatch_size       18
+#define led_control_PresetEffect_size            18
+#define led_control_PresetSceneSummary_size      39
 #define led_control_ScanIcRequest_size           0
-#define led_control_SceneOperationRequest_size   403
-#define led_control_SceneOperationResponse_size  68
-#define led_control_SceneSummary_size            40
-#define led_control_SegmentConfig_size           32
+#define led_control_SceneColor_size              20
+#define led_control_SceneOperationRequest_size   862
+#define led_control_SceneOperationResponse_size  73
+#define led_control_SceneSummary_size            41
+#define led_control_SegmentConfig_size           98
 #define led_control_SetBrightnessRequest_size    6
-#define led_control_SetBrightnessResponse_size   2
 #define led_control_SetChannelModeRequest_size   10
-#define led_control_SetChannelModeResponse_size  68
+#define led_control_SetChannelModeResponse_size  67
 #define led_control_SetColorRequest_size         42
-#define led_control_SetColorResponse_size        2
-#define led_control_SetCustomChannelOrderResponse_size 68
+#define led_control_SetCustomChannelOrderRequest_size 30
+#define led_control_SetCustomChannelOrderResponse_size 67
+#define led_control_SetDeviceNameRequest_size    21
+#define led_control_SetDeviceNameResponse_size   67
 #define led_control_SetLightConfigRequest_size   40
-#define led_control_SetLightConfigResponse_size  70
+#define led_control_SetLightConfigResponse_size  69
 #define led_control_SetOnOffRequest_size         2
-#define led_control_SetOnOffResponse_size        2
-#define led_control_SetPresetEffectRequest_size  14
-#define led_control_SetPresetEffectResponse_size 2
+#define led_control_SetPresetEffectRequest_size  18
 #define led_control_SetStaticModeRequest_size    36
-#define led_control_SetStaticModeResponse_size   2
-#define led_control_StateNotification_size       457
+#define led_control_SetWhiteBrightnessRequest_size 6
+#define led_control_StateNotification_size       125
+#define led_control_StaticStatePatch_size        44
 #define led_control_StaticState_size             44
 
 #ifdef __cplusplus

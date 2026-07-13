@@ -12,6 +12,9 @@ PB_BIND(led_control_ColorRGB, led_control_ColorRGB, AUTO)
 PB_BIND(led_control_ColorTemperature, led_control_ColorTemperature, AUTO)
 
 
+PB_BIND(led_control_SceneColor, led_control_SceneColor, AUTO)
+
+
 PB_BIND(led_control_LightConfig, led_control_LightConfig, AUTO)
 
 
@@ -24,13 +27,37 @@ PB_BIND(led_control_StaticState, led_control_StaticState, AUTO)
 PB_BIND(led_control_PresetEffect, led_control_PresetEffect, AUTO)
 
 
+PB_BIND(led_control_CustomSceneSummary, led_control_CustomSceneSummary, AUTO)
+
+
 PB_BIND(led_control_SegmentConfig, led_control_SegmentConfig, AUTO)
 
 
 PB_BIND(led_control_CustomScene, led_control_CustomScene, 2)
 
 
-PB_BIND(led_control_DeviceStatus, led_control_DeviceStatus, 2)
+PB_BIND(led_control_ModeInfo, led_control_ModeInfo, AUTO)
+
+
+PB_BIND(led_control_GetSupportedModesRequest, led_control_GetSupportedModesRequest, AUTO)
+
+
+PB_BIND(led_control_GetSupportedModesResponse, led_control_GetSupportedModesResponse, 2)
+
+
+PB_BIND(led_control_PresetSceneSummary, led_control_PresetSceneSummary, AUTO)
+
+
+PB_BIND(led_control_GetPresetScenesRequest, led_control_GetPresetScenesRequest, AUTO)
+
+
+PB_BIND(led_control_GetPresetScenesResponse, led_control_GetPresetScenesResponse, 2)
+
+
+PB_BIND(led_control_DeviceStatus, led_control_DeviceStatus, AUTO)
+
+
+PB_BIND(led_control_SceneSummary, led_control_SceneSummary, AUTO)
 
 
 PB_BIND(led_control_GetDeviceInfoRequest, led_control_GetDeviceInfoRequest, AUTO)
@@ -63,34 +90,10 @@ PB_BIND(led_control_SetChannelModeRequest, led_control_SetChannelModeRequest, AU
 PB_BIND(led_control_SetChannelModeResponse, led_control_SetChannelModeResponse, AUTO)
 
 
-PB_BIND(led_control_SetOnOffRequest, led_control_SetOnOffRequest, AUTO)
+PB_BIND(led_control_SetDeviceNameRequest, led_control_SetDeviceNameRequest, AUTO)
 
 
-PB_BIND(led_control_SetOnOffResponse, led_control_SetOnOffResponse, AUTO)
-
-
-PB_BIND(led_control_SetBrightnessRequest, led_control_SetBrightnessRequest, AUTO)
-
-
-PB_BIND(led_control_SetBrightnessResponse, led_control_SetBrightnessResponse, AUTO)
-
-
-PB_BIND(led_control_SetColorRequest, led_control_SetColorRequest, AUTO)
-
-
-PB_BIND(led_control_SetColorResponse, led_control_SetColorResponse, AUTO)
-
-
-PB_BIND(led_control_SetStaticModeRequest, led_control_SetStaticModeRequest, AUTO)
-
-
-PB_BIND(led_control_SetStaticModeResponse, led_control_SetStaticModeResponse, AUTO)
-
-
-PB_BIND(led_control_SetPresetEffectRequest, led_control_SetPresetEffectRequest, AUTO)
-
-
-PB_BIND(led_control_SetPresetEffectResponse, led_control_SetPresetEffectResponse, AUTO)
+PB_BIND(led_control_SetDeviceNameResponse, led_control_SetDeviceNameResponse, AUTO)
 
 
 PB_BIND(led_control_SceneOperationRequest, led_control_SceneOperationRequest, 2)
@@ -99,25 +102,43 @@ PB_BIND(led_control_SceneOperationRequest, led_control_SceneOperationRequest, 2)
 PB_BIND(led_control_SceneOperationResponse, led_control_SceneOperationResponse, AUTO)
 
 
+PB_BIND(led_control_GetCustomSceneRequest, led_control_GetCustomSceneRequest, AUTO)
+
+
+PB_BIND(led_control_GetCustomSceneResponse, led_control_GetCustomSceneResponse, 2)
+
+
 PB_BIND(led_control_ListScenesRequest, led_control_ListScenesRequest, AUTO)
 
 
 PB_BIND(led_control_ListScenesResponse, led_control_ListScenesResponse, 2)
 
 
-PB_BIND(led_control_SceneSummary, led_control_SceneSummary, AUTO)
+PB_BIND(led_control_SetOnOffRequest, led_control_SetOnOffRequest, AUTO)
 
 
-PB_BIND(led_control_StateNotification, led_control_StateNotification, 2)
+PB_BIND(led_control_SetBrightnessRequest, led_control_SetBrightnessRequest, AUTO)
+
+
+PB_BIND(led_control_SetWhiteBrightnessRequest, led_control_SetWhiteBrightnessRequest, AUTO)
+
+
+PB_BIND(led_control_SetColorRequest, led_control_SetColorRequest, AUTO)
+
+
+PB_BIND(led_control_SetStaticModeRequest, led_control_SetStaticModeRequest, AUTO)
+
+
+PB_BIND(led_control_SetPresetEffectRequest, led_control_SetPresetEffectRequest, AUTO)
 
 
 PB_BIND(led_control_OTAStartParams, led_control_OTAStartParams, AUTO)
 
 
-PB_BIND(led_control_OTADataParams, led_control_OTADataParams, 2)
+PB_BIND(led_control_OTADataParams, led_control_OTADataParams, AUTO)
 
 
-PB_BIND(led_control_OTARequest, led_control_OTARequest, 2)
+PB_BIND(led_control_OTARequest, led_control_OTARequest, AUTO)
 
 
 PB_BIND(led_control_OTAResponse, led_control_OTAResponse, AUTO)
@@ -135,10 +156,24 @@ PB_BIND(led_control_FactoryResetRequest, led_control_FactoryResetRequest, AUTO)
 PB_BIND(led_control_FactoryResetResponse, led_control_FactoryResetResponse, AUTO)
 
 
+PB_BIND(led_control_StaticStatePatch, led_control_StaticStatePatch, AUTO)
+
+
+PB_BIND(led_control_PresetEffectPatch, led_control_PresetEffectPatch, AUTO)
+
+
+PB_BIND(led_control_PartialStatusUpdate, led_control_PartialStatusUpdate, AUTO)
+
+
+PB_BIND(led_control_StateNotification, led_control_StateNotification, AUTO)
+
+
 PB_BIND(led_control_Envelope, led_control_Envelope, 2)
 
 
 PB_BIND(led_control_EnvelopeResponse, led_control_EnvelopeResponse, 2)
+
+
 
 
 

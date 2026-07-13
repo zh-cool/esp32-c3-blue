@@ -43,19 +43,10 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
         env_resp.result.ota_result = *ota_r;
     }
 
-    led_control_Envelope env = led_control_Envelope_init_zero;
-    env.protocol_version = 2;
-    env.request_id = request_id;
-    env.which_payload = led_control_Envelope_response_tag;
-    env.payload.response = env_resp;
-
-    ESP_LOGI(TAG, "store_resp: req=%u", request_id);
     pb_ostream_t s = pb_ostream_from_buffer(envelope_resp_buf, sizeof(envelope_resp_buf));
-    if (pb_encode(&s, led_control_Envelope_fields, &env)) {
+    if (pb_encode(&s, led_control_EnvelopeResponse_fields, &env_resp)) {
         envelope_resp_len = s.bytes_written;
-        ESP_LOGI(TAG, "encoded %u bytes", envelope_resp_len);
         envelope_notify_all();
-        ESP_LOGI(TAG, "after notify: len=%u", envelope_resp_len);
     } else
         ESP_LOGE(TAG, "encode fail: %s", PB_GET_ERROR(&s));
 }

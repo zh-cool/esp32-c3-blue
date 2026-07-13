@@ -72,21 +72,20 @@ void envelope_notify_all(void)
 static void store_resp(uint32_t request_id, led_control_ErrorCode error,
                        const char *msg, led_control_EnvelopeResponse *resp)
 {
-    led_control_Envelope env = led_control_Envelope_init_default;
-    env.protocol_version = 2;
-    env.request_id = request_id;
-    env.which_payload = led_control_Envelope_response_tag;
+    led_control_EnvelopeResponse r = led_control_EnvelopeResponse_init_default;
+    r.request_id = request_id;
+    r.error = error;
 
     if (resp) {
-        env.payload.response = *resp;
+        r = *resp;
+        if (r.error_msg[0] == '\0' && msg)
+            strncpy(r.error_msg, msg, sizeof(r.error_msg) - 1);
     } else {
-        env.payload.response.request_id = request_id;
-        env.payload.response.error = error;
-        if (msg) strncpy(env.payload.response.error_msg, msg, sizeof(env.payload.response.error_msg) - 1);
+        if (msg) strncpy(r.error_msg, msg, sizeof(r.error_msg) - 1);
     }
 
     pb_ostream_t s = pb_ostream_from_buffer(envelope_resp_buf, sizeof(envelope_resp_buf));
-    if (pb_encode(&s, led_control_Envelope_fields, &env)) {
+    if (pb_encode(&s, led_control_EnvelopeResponse_fields, &r)) {
         envelope_resp_len = s.bytes_written;
         envelope_notify_all();
     } else {
