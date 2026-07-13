@@ -64,6 +64,7 @@ static int gatt_svc_access(uint16_t conn_handle, uint16_t attr_handle,
             envelope_handle(conn_handle, buf, len);
             return 0;
         }
+        ESP_LOGW(TAG, "写到了未预期的 handle=%d (cmd=%d)", attr_handle, s_cmd_handle);
         return 0;
     }
 
