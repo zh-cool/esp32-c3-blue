@@ -55,6 +55,7 @@ static void store_resp(uint32_t request_id, const led_control_OTAResponse *ota_r
         envelope_resp_len = s.bytes_written;
         ESP_LOGI(TAG, "encoded %u bytes", envelope_resp_len);
         envelope_notify_all();
+        ESP_LOGI(TAG, "after notify: len=%u", envelope_resp_len);
     } else
         ESP_LOGE(TAG, "encode fail: %s", PB_GET_ERROR(&s));
 }
