@@ -2,7 +2,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.5.4
+    version: 6.0.1
   livekit/nanopb:
     component_hash: 5b3bd915d2eb2ad1a7bb4a3ca655c40f31bab5f4f48e75ec04e300dc9ab78f4d
     dependencies: []
@@ -15,4 +15,4 @@ direct_dependencies:
 - livekit/nanopb
 manifest_hash: 065e3c9a5565adaf3916692b8c2dcb0c2d9c52262309bd603974a79266ffc08f
 target: esp32c3
-version: 2.0.0
+version: 3.0.0

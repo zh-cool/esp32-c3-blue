@@ -176,6 +176,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 		ESP_LOGI(TAG, "已断开 (conn=%d, reason=%d)", h, event->disconnect.reason);
 		envelope_remove_peer(h);
 		ota_on_disconnect();
+		adv_start(); // ← 重新开始广播
 		return 0;
 	}
 
@@ -186,7 +187,29 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 	case BLE_GAP_EVENT_PHY_UPDATE_COMPLETE:
 		ESP_LOGI(TAG, "PHY: conn=%d, TX=%s, RX=%s", event->phy_updated.conn_handle, phy_str(event->phy_updated.tx_phy), phy_str(event->phy_updated.rx_phy));
 		return 0;
+	case BLE_GAP_EVENT_CONN_UPDATE:
+		ESP_LOGI(TAG, "BLE_GAP_EVENT_CONN_UPDATE: status=%d", event->conn_update.status);
+		if (event->conn_update.status == 0) {
+			struct ble_gap_conn_desc desc;
+			if (ble_gap_conn_find(event->conn_update.conn_handle, &desc) == 0) {
+				ESP_LOGI(TAG, "连接参数更新成功: 新间隔=%u (%.2fms), 延迟=%u, 超时=%u",
+					 desc.conn_itvl,
+					 desc.conn_itvl * 1.25,
+					 desc.conn_latency,
+					 desc.supervision_timeout);
+			}
+		} else {
+			ESP_LOGW(TAG, "连接参数更新失败, status=%d", event->conn_update.status);
+		}
+		return 0;
 
+	case BLE_GAP_EVENT_CONN_UPDATE_REQ: {
+		/* 作为从机, 接受主机发起的连接参数更新请求 */
+		ESP_LOGI(TAG, "BLE_GAP_EVENT_CONN_UPDATE_REQ: 从机接受更新");
+		/* 返回 0 表示接受主机的参数, 非 0 表示拒绝 */
+		*(event->conn_update_req.self_params) = *event->conn_update_req.peer_params;
+		return 0;
+	}
 	case BLE_GAP_EVENT_ADV_COMPLETE:
 		adv_start();
 		return 0;
@@ -238,13 +261,16 @@ static void adv_start(void)
 
 static void ble_host_sync(void)
 {
+	ESP_LOGI(TAG, "Host sync callback triggered");
 	ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID), BLE_UUID16_DECLARE(GATT_CHR_UUID_CUSTOM_DATA), NULL, &s_cmd_handle);
 	ble_gatts_find_chr(BLE_UUID16_DECLARE(GATT_SVC_UUID), BLE_UUID16_DECLARE(GATT_CHR_UUID_NOTIFY_DATA), NULL, &s_notify_handle);
-	if (s_notify_handle == 0)
+	ESP_LOGI(TAG, "cmd_handle=0x%04x, notify_handle=0x%04x", s_cmd_handle, s_notify_handle);
+	if (s_notify_handle == 0) {
 		ESP_LOGW(TAG, "未找到 NOTIFY 句柄");
-	else
+	} else {
 		envelope_set_data_handle(s_notify_handle);
-	adv_start();
+	}
+	adv_start(); // 仅在此处启动一次广播
 }
 
 static void ble_host_task(void *param)
@@ -264,7 +290,10 @@ static void ble_app_init(void)
 
 	ble_hs_cfg.sync_cb = ble_host_sync;
 	ble_gatts_count_cfg(gatt_svcs);
-	ble_gatts_add_svcs(gatt_svcs);
+	int rc = ble_gatts_add_svcs(gatt_svcs);
+	if (rc != 0) {
+		ESP_LOGE(TAG, "Failed to add GATT services, rc=%d", rc);
+	}
 	nimble_port_freertos_init(ble_host_task);
 }
 
