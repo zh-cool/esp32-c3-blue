@@ -157,7 +157,7 @@ static int ble_gap_event(struct ble_gap_event *event, void *arg)
 			if (rc != 0) {
 				ESP_LOGW(TAG, "更新连接参数失败: %d", rc);
 			} else {
-				ESP_LOGD(TAG, "请求更新连接参数");
+				ESP_LOGI(TAG, "已请求更新连接参数 (等待主机响应)");
 			}
 
 			rc = ble_gattc_exchange_mtu(event->connect.conn_handle, NULL, NULL);
