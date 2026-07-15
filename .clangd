@@ -1,0 +1,30 @@
+# ESP-IDF v6.0.1 ships GCC 15.2 + an Espressif-patched clang (esp-clang).
+# The system clangd (14.0.0) cannot parse the GCC command line:
+#   -std=gnu23                     -> C23, unknown to clangd 14
+#   -march=rv32imc_zicsr_zifencei  -> zicsr extension unknown to clangd 14
+#   -fno-shrink-wrap / -fstrict-volatile-bitfields / -fno-tree-switch-conversion
+#    / -fzero-init-padding-bits=all / -fno-malloc-dce  -> GCC backend flags
+# Plus clangd queries the gcc driver for implicit flags, which yields a
+# tune CPU of 'esp-base' that clang's cc1 rejects ("unknown target CPU 'esp-base'"),
+# so CreateTargetInfo() returned null and no preamble could be built -> every
+# header showed as "not found".
+#
+# Fix: drive clangd with esp-clang itself (it understands the riscv32-esp-elf
+# target and silently drops the GCC-only -f flags), and strip the few flags
+# that still conflict.
+CompileFlags:
+  Compiler: /home/austin/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clang
+  Remove:
+    - -march=*
+    - -mcpu=*
+    - -mtune=*
+    - -std=gnu23
+    - -fno-shrink-wrap
+    - -fstrict-volatile-bitfields
+    - -fno-tree-switch-conversion
+    - -fzero-init-padding-bits=*
+    - -fno-malloc-dce
+  Add:
+    - -std=gnu17
+    - -march=rv32imc
+    - -mcpu=generic-rv32
